@@ -7,7 +7,7 @@
 
 ---
 
-## 更新内容  [查看文档](./train_ssq_update.)
+## 更新内容  [查看文档](./train_ssq_update.md)
 
 ## 功能
 
