@@ -1,6 +1,21 @@
+# LottoProphet
+
+
+一个使用深度学习模型进行彩票号码预测的应用程序。本项目支持两种主要的彩票类型：**双色球 (SSQ)** 和 **大乐透 (DLT)**，并使用先进的机器学习技术（如条件随机场 CRF）进行序列建模。
+
+-------------------------
+
+---
+## 软件截图
+![image](https://github.com/user-attachments/assets/e7e8bc1e-3f4f-472b-91ed-303fce6d3b01)
+
+
+
+## 20241210更新内容  [查看文档](./train_ssq_update.md)
+
 # 彩票预测应用程序整体流程
 
-本流程概述了彩票预测应用程序的主要步骤，包括数据获取、模型训练和用户界面交互。应用程序支持两种彩票类型：**双色球（ssq）**和**大乐透（dlt）**。
+彩票预测应用程序的主要步骤，包括数据获取、模型训练和用户界面交互。应用程序支持两种彩票类型：**双色球（ssq）**和**大乐透（dlt）**。
 
 ## 1. 组件概述
 
@@ -93,31 +108,8 @@
 - **主应用程序**：
    - 训练和预测过程中捕获异常，通过日志框显示错误信息。
 
-## 4. 依赖管理
 
-- **依赖库**：
-   - `requests`, `pandas`, `beautifulsoup4`, `lxml`, `torch`, `torchcrf`, `scikit-learn`, `joblib`, `loguru`, `PyQt5`
-
-- **安装方法**：
-   - 创建 `requirements.txt` 文件：
-     ```text
-     requests
-     pandas
-     beautifulsoup4
-     lxml
-     torch
-     torchcrf
-     scikit-learn
-     joblib
-     loguru
-     PyQt5
-     ```
-   - 使用以下命令安装依赖：
-     ```bash
-     pip install -r requirements.txt
-     ```
-
-## 5. 测试与验证
+## 4. 测试与验证
 
 1. **独立测试数据获取脚本**：
    - 运行 `fetch_ssq_data.py` 和 `fetch_dlt_data.py`，验证数据下载和保存。
@@ -131,7 +123,36 @@
 4. **异常情况测试**：
    - 模拟网络中断、数据文件缺失或训练脚本缺失，验证错误处理机制。
 
-## 6. 总结
+## 5. 总结
 
-彩票预测应用程序通过集成数据获取、模型训练和预测功能，为用户提供便捷的双色球和大乐透号码预测服务。通过模块化设计、详细的错误处理与日志记录，确保系统的稳定性和用户体验。
+彩票预测应用程序通过集成数据获取、模型训练和预测功能，为用户提供便捷的双色球和大乐透号码预测服务。通过模块化设计、详细的错误处理与日志记录。
 
+
+
+
+## 功能
+
+- 支持双色球 (SSQ) 和大乐透 (DLT) 的彩票号码预测。
+- 使用 LSTM 和 CRF 模型进行训练，实现序列化建模。
+- 提供基于 PyQt5 的图形用户界面 (GUI)，便于操作。
+- 支持数据自动抓取和实时训练日志显示。
+---
+
+## 环境要求
+
+- Python 3.9 或更高版本
+- PyTorch(可选择GPU版本)
+- torchcrf
+- PyQt5
+- pandas
+- numpy
+- scikit-learn
+
+---
+
+## 安装步骤
+
+1. **克隆仓库**：
+   ```bash
+   git clone git@github.com:zhaoyangpp/LottoProphet.git
+   cd LottoProphet
