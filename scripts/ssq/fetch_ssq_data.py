@@ -1,5 +1,3 @@
-# fetch_ssq_data.py
-
 import os
 import requests
 import pandas as pd
