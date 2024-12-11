@@ -4,6 +4,15 @@
 一个使用深度学习模型进行彩票号码预测的应用程序。本项目支持两种主要的彩票类型：**双色球 (SSQ)** 和 **大乐透 (DLT)**，并使用先进的机器学习技术（如条件随机场 CRF）进行序列建模。
 
 
+## 多个小伙伴遇到安装 torchcrf 失败，解决方案：从 GitHub 克隆并手动安装
+1. **克隆仓库**：
+   ```bash
+   git clone https://github.com/kmkurn/pytorch-crf.git
+   cd pytorch-crf
+   python setup.py install
+
+
+
 
 
 -------------------------
