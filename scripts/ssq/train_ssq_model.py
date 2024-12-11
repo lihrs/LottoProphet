@@ -1,5 +1,3 @@
-# train_ssq_model.py
-
 import os
 import sys
 import subprocess
