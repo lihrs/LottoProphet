@@ -1,8 +1,7 @@
-# lottery_predictor_app.py
 
 # -*- coding:utf-8 -*-
 """
-Author: BigCat
+Author: Zhao Yang
 """
 
 import sys
