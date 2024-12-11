@@ -15,7 +15,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 name_path = {
     "ssq": {
         "name": "双色球",
-        "path": "./"
+        "path": "./"  # 训练脚本运行目录
     }
 }
 data_file_name = "ssq_history.csv"
@@ -49,7 +49,7 @@ def get_current_number(name):
     full_url = f"{url}history.shtml"
     logging.info(f"Fetching URL: {full_url}")
     try:
-        response = requests.get(full_url, verify=False)
+        response = requests.get(full_url, verify=False, timeout=10)
         if response.status_code != 200:
             logging.error(f"Failed to fetch data. Status code: {response.status_code}")
             sys.exit(1)
@@ -66,8 +66,11 @@ def get_current_number(name):
             sys.exit(1)
         logging.info(f"最新一期期号：{current_num}")
         return current_num
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching current number: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
         sys.exit(1)
 
 def spider(name, start, end):
@@ -82,13 +85,17 @@ def spider(name, start, end):
     full_url = f"{url}{path.format(start)}{end}"
     logging.info(f"Fetching URL: {full_url}")
     try:
-        response = requests.get(full_url, verify=False)
+        response = requests.get(full_url, verify=False, timeout=10)
         if response.status_code != 200:
             logging.error(f"Failed to fetch data. Status code: {response.status_code}")
             sys.exit(1)
         response.encoding = "gb2312"
         soup = BeautifulSoup(response.text, "lxml")
-        trs = soup.find("tbody", attrs={"id": "tdata"}).find_all("tr")
+        tbody = soup.find("tbody", attrs={"id": "tdata"})
+        if not tbody:
+            logging.error("Could not find the table body with id 'tdata'.")
+            sys.exit(1)
+        trs = tbody.find_all("tr")
         data = []
         for tr in trs:
             item = {}
@@ -113,21 +120,28 @@ def spider(name, start, end):
         df = df.dropna(subset=['期数']).sort_values(by='期数').reset_index(drop=True)
         logging.info(f"成功爬取 {len(df)} 条数据。")
         return df
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching data: {e}")
+        sys.exit(1)
     except Exception as e:
         logging.error(f"Error in spider: {e}")
         sys.exit(1)
 
 def fetch_ssq_data():
     """
-    获取并保存双色球历史数据到 'ssq/ssq_history.csv'
+    获取并保存双色球历史数据到 'scripts/ssq/ssq_history.csv'
     """
     name = "ssq"
     current_number = get_current_number(name)
     df = spider(name, 1, current_number)
-    save_path = os.path.join(name_path[name]['path'], data_file_name)
-    os.makedirs(name_path[name]["path"], exist_ok=True)
-    df.to_csv(save_path, encoding="utf-8", index=False)
-    logging.info(f"数据已保存至 {save_path}")
+    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), data_file_name)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    try:
+        df.to_csv(save_path, encoding="utf-8", index=False)
+        logging.info(f"数据已保存至 {save_path}")
+    except Exception as e:
+        logging.error(f"Error saving data to CSV: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     fetch_ssq_data()

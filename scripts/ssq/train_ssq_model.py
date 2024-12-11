@@ -14,9 +14,10 @@ from sklearn.metrics import accuracy_score
 import copy
 
 # ---------------- 配置 ----------------
-DATA_FILE = "ssq_history.csv"
-MODEL_PATH = "ssq_model.pth"
-SCALER_PATH = "scaler_X.pkl"  # 缩放器文件路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(current_dir, "ssq_history.csv")
+MODEL_PATH = os.path.join(current_dir, "ssq_model.pth")
+SCALER_PATH = os.path.join(current_dir, "scaler_X.pkl")
 BATCH_SIZE = 32
 EPOCHS = 100  # 增加训练轮数
 LEARNING_RATE = 0.001
@@ -27,15 +28,11 @@ RED_CLASSES = 33  # 红球号码范围1-33
 BLUE_CLASSES = 16  # 蓝球号码范围1-16
 OUTPUT_SEQ_LENGTH_RED = RED_BALLS  # 红球序列长度
 OUTPUT_SEQ_LENGTH_BLUE = BLUE_BALLS  # 蓝球序列长度
+HIDDEN_DIM = 128  # 增加隐藏层维度
 PATIENCE = 10  # 早停耐心值
 
-# 获取当前脚本所在目录
-current_dir = os.path.dirname(os.path.abspath(__file__))
-
 # 获取项目根目录
-project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
-
-# 将项目根目录添加到 sys.path
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.append(project_root)
 
 try:
@@ -101,7 +98,10 @@ def fetch_data_if_not_exists():
             logger.error(f"数据获取脚本不存在: {fetch_script}")
             sys.exit(1)
         try:
-            subprocess.run(['python', fetch_script], check=True)
+            # 使用当前运行的 Python 解释器
+            python_executable = sys.executable
+            logger.info(f"运行数据获取脚本: {fetch_script} 使用解释器: {python_executable}")
+            subprocess.run([python_executable, fetch_script], check=True)
             logger.info("数据获取完成。")
         except subprocess.CalledProcessError as e:
             logger.error(f"运行数据获取脚本失败: {e}")
@@ -135,8 +135,8 @@ def train_model():
     logger.info(f"使用设备: {device}")
 
     # 模型初始化并移动到设备
-    red_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=RED_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_RED, num_layers=1).to(device)
-    blue_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=BLUE_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_BLUE, num_layers=1).to(device)
+    red_model = LstmCRFModel(input_dim, hidden_dim=HIDDEN_DIM, output_dim=RED_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_RED, num_layers=1).to(device)
+    blue_model = LstmCRFModel(input_dim, hidden_dim=HIDDEN_DIM, output_dim=BLUE_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_BLUE, num_layers=1).to(device)
     red_optimizer = torch.optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
     blue_optimizer = torch.optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
 

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import subprocess
 import torch
 import numpy as np
 import pandas as pd
@@ -9,38 +10,51 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 from loguru import logger
-from model import LstmCRFModel  # 导入模型类
-import copy
 from sklearn.metrics import accuracy_score
-import torch.nn as nn
+import copy
 
 # 配置 loguru
 logger.remove()  # 移除默认的处理器
 logger.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}", level="INFO")
 
 # ---------------- 配置 ----------------
-DATA_FILE = "./dlt/dlt_history.csv"
-MODEL_PATH = "./dlt/dlt_model.pth"
-SCALER_PATH = "./dlt/scaler_X.pkl"  # 缩放器文件路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(current_dir, "dlt_history.csv")
+MODEL_PATH = os.path.join(current_dir, "dlt_model.pth")
+SCALER_PATH = os.path.join(current_dir, "scaler_X.pkl")
 BATCH_SIZE = 32
 EPOCHS = 100  # 增加训练轮数
 LEARNING_RATE = 0.001
 WINDOW_SIZE = 10
-RED_BALLS = 5  # 大乐透前区红球号码数量
-BLUE_BALLS = 2  # 大乐透后区蓝球号码数量
-RED_CLASSES = 35  # 红球号码范围1-35
-BLUE_CLASSES = 12  # 蓝球号码范围1-12
-OUTPUT_SEQ_LENGTH_RED = RED_BALLS  # 红球序列长度
-OUTPUT_SEQ_LENGTH_BLUE = BLUE_BALLS  # 蓝球序列长度
 PATIENCE = 10  # 早停耐心值
 
-# 检查 GPU 是否可用
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logger.info(f"使用设备: {device}")
+# 获取项目根目录
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+sys.path.append(project_root)
+
+try:
+    from model import LstmCRFModel  # 使用绝对导入
+except ImportError as e:
+    logger.error(f"导入模型类失败: {e}")
+    sys.exit(1)
+
+from sklearn.model_selection import train_test_split
 
 class LotteryDataset(Dataset):
-    def __init__(self, csv_file, window_size, red_balls, blue_balls):
+    def __init__(self, csv_file, window_size, red_balls=5, blue_balls=2):
         self.data = pd.read_csv(csv_file)
+
+        # 映射列名到代码中预期的列名
+        self.data.rename(columns={
+            '红球_1': 'Red_1',
+            '红球_2': 'Red_2',
+            '红球_3': 'Red_3',
+            '红球_4': 'Red_4',
+            '红球_5': 'Red_5',
+            '蓝球_1': 'Blue_1',
+            '蓝球_2': 'Blue_2'
+        }, inplace=True)
+
         self.scaler_X = MinMaxScaler()
         self.features, self.labels = self.preprocess(self.data, window_size, red_balls, blue_balls)
 
@@ -61,7 +75,7 @@ class LotteryDataset(Dataset):
             combined_labels = np.concatenate((red_labels_seq, blue_label))
             labels.append(combined_labels)
 
-        # 转换为NumPy数组并进行缩放
+        # 转换为 NumPy 数组并进行缩放
         features_np = np.array(features)  # 形状: (num_samples, window_size, feature_dim)
         features_scaled = self.scaler_X.fit_transform(features_np.reshape(-1, features_np.shape[-1])).reshape(features_np.shape)
 
@@ -77,15 +91,38 @@ class LotteryDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.features[idx], self.labels[idx]
+def fetch_data_if_not_exists():
+    """
+    检查 CSV 文件是否存在，如果不存在，则调用 fetch_dlt_data.py 获取数据
+    """
+    if not os.path.exists(DATA_FILE):
+        logger.info(f"数据文件 {DATA_FILE} 不存在，开始获取数据...")
+        fetch_script = os.path.join(current_dir, 'fetch_dlt_data.py')
+        if not os.path.exists(fetch_script):
+            logger.error(f"数据获取脚本不存在: {fetch_script}")
+            sys.exit(1)
+        try:
+            # 使用当前运行的 Python 解释器
+            python_executable = sys.executable
+            logger.info(f"运行数据获取脚本: {fetch_script} 使用解释器: {python_executable}")
+            subprocess.run([python_executable, fetch_script], check=True)
+            logger.info("数据获取完成。")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"运行数据获取脚本失败: {e}")
+            sys.exit(1)
+    else:
+        logger.info(f"数据文件 {DATA_FILE} 已存在。")
 
 def train_model():
+    fetch_data_if_not_exists()
+
     if not os.path.exists(DATA_FILE):
         logger.error(f"数据文件不存在: {DATA_FILE}")
-        return
+        sys.exit(1)
 
     # 数据加载
     logger.info("加载数据...")
-    dataset = LotteryDataset(DATA_FILE, WINDOW_SIZE, RED_BALLS, BLUE_BALLS)
+    dataset = LotteryDataset(DATA_FILE, WINDOW_SIZE)
 
     # 划分训练集和验证集
     train_size = int(0.8 * len(dataset))
@@ -97,9 +134,13 @@ def train_model():
 
     input_dim = dataset.features.shape[-1]
 
+    # 检查 GPU 是否可用
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"使用设备: {device}")
+
     # 模型初始化并移动到设备
-    red_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=RED_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_RED, num_layers=1).to(device)
-    blue_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=BLUE_CLASSES, output_seq_length=OUTPUT_SEQ_LENGTH_BLUE, num_layers=1).to(device)
+    red_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=35, output_seq_length=5, num_layers=1).to(device)
+    blue_model = LstmCRFModel(input_dim, hidden_dim=128, output_dim=12, output_seq_length=2, num_layers=1).to(device)
     red_optimizer = torch.optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
     blue_optimizer = torch.optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
 
@@ -127,7 +168,7 @@ def train_model():
             labels = labels.to(device)
 
             # 红球训练
-            red_labels = labels[:, :RED_BALLS]  # (batch_size, RED_BALLS)
+            red_labels = labels[:, :5]  # (batch_size, 5)
             red_mask = (red_labels >= 0)
             red_loss = red_model(features, red_labels, red_mask)
             red_optimizer.zero_grad()
@@ -136,7 +177,7 @@ def train_model():
             total_red_loss += red_loss.item()
 
             # 蓝球训练
-            blue_labels = labels[:, RED_BALLS:]  # (batch_size, BLUE_BALLS)
+            blue_labels = labels[:, 5:]  # (batch_size, 2)
             blue_mask = (blue_labels >= 0)
             blue_loss = blue_model(features, blue_labels, blue_mask)
             blue_optimizer.zero_grad()
@@ -162,7 +203,7 @@ def train_model():
                 labels = labels.to(device)
 
                 # 红球验证
-                red_labels = labels[:, :RED_BALLS]
+                red_labels = labels[:, :5]
                 red_mask = (red_labels >= 0)
                 red_loss = red_model(features, red_labels, red_mask)
                 val_red_loss += red_loss.item()
@@ -172,7 +213,7 @@ def train_model():
                 all_red_labels.extend(red_labels.cpu().numpy().flatten())
 
                 # 蓝球验证
-                blue_labels = labels[:, RED_BALLS:]
+                blue_labels = labels[:, 5:]
                 blue_mask = (blue_labels >= 0)
                 blue_loss = blue_model(features, blue_labels, blue_mask)
                 val_blue_loss += blue_loss.item()
