@@ -7,7 +7,8 @@
 
 ---
 ## 软件截图
-![image](https://github.com/user-attachments/assets/2a7bdfd3-1382-45a4-bbcc-2d4a2e4d8d61)
+![image](https://github.com/user-attachments/assets/e7e8bc1e-3f4f-472b-91ed-303fce6d3b01)
+
 
 
 ## 20241210更新内容  [查看文档](./train_ssq_update.md)
