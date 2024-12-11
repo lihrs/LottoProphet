@@ -11,10 +11,6 @@
    cd pytorch-crf
    python setup.py install
 
-
-
-
-
 -------------------------
 
 ---
