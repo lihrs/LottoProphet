@@ -1,5 +1,3 @@
-# model.py
-
 import torch.nn as nn
 from torchcrf import CRF
 
@@ -13,10 +11,10 @@ class LstmCRFModel(nn.Module):
         self.output_dim = output_dim
 
     def forward(self, x, labels=None, mask=None):
-        lstm_out, _ = self.lstm(x)  # (batch_size, window_size, hidden_dim)
-        final_hidden = lstm_out[:, -1, :]  # (batch_size, hidden_dim)
-        logits = self.fc(final_hidden)  # (batch_size, output_seq_length * output_dim)
-        logits = logits.view(-1, self.output_seq_length, self.output_dim)  # (batch_size, output_seq_length, output_dim)
+        lstm_out, _ = self.lstm(x)
+        final_hidden = lstm_out[:, -1, :]
+        logits = self.fc(final_hidden)
+        logits = logits.view(-1, self.output_seq_length, self.output_dim)
 
         if labels is not None:
             if mask is not None:

@@ -16,13 +16,12 @@ from torchcrf import CRF
 import joblib
 import numpy as np
 import subprocess
-from model import LstmCRFModel  # 导入模型类
+from model import LstmCRFModel
 
-# 设置标准输出和错误输出编码为utf-8
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
-# ---------------- 配置 ----------------
+
 name_path = {
     "dlt": {
         "name": "大乐透",
