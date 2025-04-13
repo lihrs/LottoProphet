@@ -5,11 +5,12 @@
 [English README](./README_EN.md) | 中文说明
 
 ## 20241210更新内容  [查看文档](./docs/train_ssq_update.md)
+## 20241210更新内容  [查看文档](./docs/train_ssq_update.md)
 ## 20250114更新内容  [查看文档](./update/README.md) 主要修复内容：每次多个的结果都一样
 ## 20250322更新内容  [查看文档](./update/20250322Update.md) 主要更新内容：UI优化、功能增强和性能优化
 ## 20250323更新内容  [查看文档](./update/20250323Update.md) 代码重构，模型增加，修复已知问题
 ## 20250325更新内容  [查看文档](./update/20250325Update.md) 期望值模型
-
+## 20250413更新内容  [查看文档](./update/blue_ball_fix_update.md) 修复已知问题
 ## 多个小伙伴遇到安装 torchcrf 失败，解决方案：从 GitHub 克隆并手动安装
 1. **克隆仓库**：
    ```bash
