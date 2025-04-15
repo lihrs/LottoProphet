@@ -69,8 +69,8 @@ LottoProphet/
 
 ## 软件截图
 > **注意**: 最新版本(2025年3月22日更新)已优化UI界面，使用QTabWidget分离预测和分析功能。如下
-![分析界面](![image](https://github.com/user-attachments/assets/187a8e17-fb40-4cc1-9892-36fa1401d386)
-![预测界面](![image](https://github.com/user-attachments/assets/faec6855-2599-46c6-b78f-292748130c12)
+![image](https://github.com/user-attachments/assets/187a8e17-fb40-4cc1-9892-36fa1401d386)
+![image](https://github.com/user-attachments/assets/faec6855-2599-46c6-b78f-292748130c12)
 
 # 彩票预测应用程序整体流程
 
