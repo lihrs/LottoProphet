@@ -6,4 +6,5 @@ myenv
 __pycache__
 catboost_info_blue
 catboost_info_red
-model
+model/dlt
+model/ssq

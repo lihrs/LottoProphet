@@ -1472,9 +1472,11 @@ class LotteryMLModels:
         
         try:
             # 预测红球
-            red_pred = self.models['red'].predict(X_scaled)[0]
             if self.model_type == 'ensemble':
                 # 集成模型需要单独处理
+                if not isinstance(self.models['red'], dict) or not self.models['red']:
+                    self.log("错误：集成模型未正确加载，红球模型为空")
+                    return None, None
                 red_votes = {}
                 for name, model in self.models['red'].items():
                     preds = model.predict(X_scaled)[0]
@@ -1492,15 +1494,21 @@ class LotteryMLModels:
                 red_predictions = [p[0] + 1 for p in red_predictions]  # +1 转回原始号码范围
             else:
                 # 单一模型预测
+                if 'red' not in self.models or not hasattr(self.models['red'], 'predict'):
+                    self.log("错误：红球模型未正确加载或缺少predict方法")
+                    return None, None
+                red_pred = self.models['red'].predict(X_scaled)[0]
                 if hasattr(red_pred, "__iter__"):
                     red_predictions = [int(p) + 1 for p in red_pred]  # +1 转回原始号码范围
                 else:
                     red_predictions = [int(red_pred) + 1]  # +1 转回原始号码范围
             
             # 预测蓝球
-            blue_pred = self.models['blue'].predict(X_scaled)[0]
             if self.model_type == 'ensemble':
                 # 集成模型需要单独处理
+                if not isinstance(self.models['blue'], dict) or not self.models['blue']:
+                    self.log("错误：集成模型未正确加载，蓝球模型为空")
+                    return None, None
                 blue_votes = {}
                 for name, model in self.models['blue'].items():
                     preds = model.predict(X_scaled)[0]
@@ -1528,6 +1536,10 @@ class LotteryMLModels:
                     blue_predictions = [top_blue_votes[i][0] + 1 for i in selected_indices]  # +1 转回原始号码范围
             else:
                 # 单一模型预测
+                if 'blue' not in self.models or not hasattr(self.models['blue'], 'predict'):
+                    self.log("错误：蓝球模型未正确加载或缺少predict方法")
+                    return None, None
+                blue_pred = self.models['blue'].predict(X_scaled)[0]
                 if hasattr(blue_pred, "__iter__"):
                     # 随机设定阈值，增加随机性
                     if np.random.random() < 0.3 and len(blue_pred) > 1:
@@ -1609,4 +1621,4 @@ def demo():
     print(f"预测蓝球号码: {blue_predictions}")
 
 if __name__ == "__main__":
-    demo() 
+    demo()

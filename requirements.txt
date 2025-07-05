@@ -8,6 +8,7 @@ pandas
 numpy
 requests
 beautifulsoup4
+lxml
 loguru
 matplotlib
 seaborn
