@@ -1,0 +1,9 @@
+# dependencies
+/node_modules
+/.vscode
+
+myenv
+__pycache__
+catboost_info_blue
+catboost_info_red
+model

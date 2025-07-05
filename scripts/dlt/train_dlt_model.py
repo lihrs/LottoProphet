@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
-from torchcrf import CRF
+from TorchCRF import CRF
 import matplotlib.pyplot as plt
 import logging
 import time
@@ -57,7 +57,7 @@ class LSTMCRF(nn.Module):
         self.fc = nn.Linear(hidden_dim, output_dim * output_seq_length)
         
         # CRF层
-        self.crf = CRF(output_dim, batch_first=True)
+        self.crf = CRF(output_dim)
 
     def forward(self, x):
         lstm_out, _ = self.lstm(x)
@@ -66,10 +66,11 @@ class LSTMCRF(nn.Module):
         return emissions
 
     def loss(self, emissions, tags, mask=None):
-        return -self.crf(emissions, tags, mask=mask, reduction='mean')
+        # CRF.forward返回形状为(batch_size)的张量，需要对其求平均得到标量
+        return -self.crf(emissions, tags, mask=mask).mean()
 
     def decode(self, emissions, mask=None):
-        return self.crf.decode(emissions, mask=mask)
+        return self.crf.viterbi_decode(emissions, mask=mask)
 
 def load_data(data_path):
     """加载数据"""
@@ -180,7 +181,7 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
             
             # 前向传播
             emissions = model(batch_X)
-            mask = torch.ones(emissions.size()[:2], dtype=torch.uint8).to(device)
+            mask = torch.ones(emissions.size()[:2], dtype=torch.bool).to(device)
 
             # 计算损失
             loss = model.loss(emissions, batch_y, mask=mask)
