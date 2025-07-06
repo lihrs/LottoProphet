@@ -629,8 +629,10 @@ class LotteryPredictorApp(QMainWindow):
             # 生成统计图表
             pixmap = plot_advanced_statistics(df, lottery_type)
             
-            # 显示结果
+            # 显示结果 - 保持原始大小，依靠滚动区域处理
             self.stats_result_label.setPixmap(pixmap)
+            # 调整标签大小以适应图像
+            self.stats_result_label.setMinimumSize(pixmap.size())
             
         except Exception as e:
             self.log_box.append(f"高级统计分析出错：{str(e)}")
@@ -656,8 +658,10 @@ class LotteryPredictorApp(QMainWindow):
             # 生成分布分析图表
             pixmap = plot_distribution_analysis(df, lottery_type)
             
-            # 显示结果
+            # 显示结果 - 保持原始大小，依靠滚动区域处理
             self.stats_result_label.setPixmap(pixmap)
+            # 调整标签大小以适应图像
+            self.stats_result_label.setMinimumSize(pixmap.size())
             
         except Exception as e:
             self.log_box.append(f"分布分析出错：{str(e)}")
@@ -666,6 +670,10 @@ class LotteryPredictorApp(QMainWindow):
     def show_statistics_data(self):
         """显示详细统计数据"""
         try:
+            # 显示加载消息
+            self.stats_result_label.setText("正在计算详细统计数据，请稍候...")
+            QApplication.processEvents()
+            
             # 获取彩票类型
             lottery_type = self.advanced_stats_lottery_combo.currentText()
             if lottery_type == "双色球":
@@ -702,7 +710,8 @@ class LotteryPredictorApp(QMainWindow):
                 self.log_box.append(f"计算统计指标出错: {stats_dict['error']}")
                 return
             
-            # 如果已有统计窗口，先关闭它
+            # 准备在主界面显示统计数据
+            # 同时也创建单独的统计窗口
             if self.stats_window is not None:
                 self.stats_window.close()
             
@@ -845,6 +854,11 @@ class LotteryPredictorApp(QMainWindow):
             self.stats_window.setLayout(stats_layout)
             self.stats_window.resize(800, 600)
             self.stats_window.show()
+            
+            # 同时在主界面的result_label中显示统计数据
+            self.stats_result_label.setText(stats_text_content)
+            # 调整标签大小以适应内容
+            self.stats_result_label.adjustSize()
             
             self.log_box.append("统计数据计算和显示完成。")
             
@@ -1236,4 +1250,4 @@ def predict_next_draw(lottery_type, model_type, num_predictions=5):
         return None
         
 if __name__ == "__main__":
-    main() 
+    main()

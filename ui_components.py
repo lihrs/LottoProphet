@@ -46,6 +46,7 @@ def create_main_tab(main_tab):
 
     lottery_label = QLabel("彩票类型:")
     lottery_combo = QComboBox()
+    lottery_combo.setMinimumWidth(100)
     lottery_combo.addItems([name_path[key]['name'] for key in name_path.keys()])
     
     model_label = QLabel("模型类型:")
@@ -90,6 +91,7 @@ def create_main_tab(main_tab):
     theme_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     
     theme_combo = QComboBox()
+    theme_combo.setMinimumWidth(120)
     theme_combo.addItems(ThemeManager().get_theme_names())
     theme_combo.setCurrentText(ThemeManager().current_theme)
     
@@ -301,13 +303,17 @@ def create_advanced_statistics_tab(advanced_stats_tab):
     
     # 创建结果显示区域
     result_label = QLabel("点击'运行分析'按钮查看统计分析结果")
-    result_label.setAlignment(Qt.AlignCenter)
-    result_label.setMinimumHeight(500)
-    result_label.setStyleSheet("background-color: white; border: 1px solid #DDDDDD;")
+    result_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)  # 顶部对齐，水平居中
+    result_label.setWordWrap(True)  # 启用文本自动换行
+    result_label.setMinimumHeight(1500)  # 增加最小高度以适应大图像
+    result_label.setStyleSheet("background-color: white; border: 1px solid #DDDDDD; padding: 10px;")
     
     # 使用QScrollArea包裹结果显示区域，以支持滚动
     scroll_area = QScrollArea()
     scroll_area.setWidgetResizable(True)
+    scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)  # 始终显示垂直滚动条
+    scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    scroll_area.setMinimumHeight(550)  # 设置最小高度
     scroll_area.setWidget(result_label)
     
     advanced_layout.addWidget(scroll_area, 1)
@@ -342,6 +348,7 @@ def create_expected_value_tab(expected_value_tab):
     
     # 彩票类型选择
     lottery_combo = QComboBox()
+    lottery_combo.setMinimumWidth(100)
     lottery_combo.addItems([name_path[key]['name'] for key in name_path.keys()])
     settings_layout.addRow("彩票类型:", lottery_combo)
     
@@ -439,4 +446,4 @@ def create_main_window():
         LotteryPredictorApp: 主窗口实例
     """
     from lottery_predictor_app_new import LotteryPredictorApp
-    return LotteryPredictorApp() 
+    return LotteryPredictorApp()
