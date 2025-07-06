@@ -306,7 +306,7 @@ def create_advanced_statistics_tab(advanced_stats_tab):
     result_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)  # 顶部对齐，水平居中
     result_label.setWordWrap(True)  # 启用文本自动换行
     result_label.setMinimumHeight(1500)  # 增加最小高度以适应大图像
-    result_label.setStyleSheet("background-color: white; border: 1px solid #DDDDDD; padding: 10px;")
+    result_label.setStyleSheet("background-color: white; border: 1px solid #DDDDDD;")
     
     # 使用QScrollArea包裹结果显示区域，以支持滚动
     scroll_area = QScrollArea()
