@@ -1339,9 +1339,12 @@ class LotteryMLModels:
             
             # 使用期望值模型进行预测
             self.log("使用期望值模型进行预测...")
-            red_preds, blue_preds = self.models['red'].predict(recent_data, num_predictions=1)
-            # 期望值模型返回的是索引列表的列表，需要处理成号码
-            if red_preds and blue_preds:
+            try:
+                red_preds, blue_preds = self.models['red'].predict(recent_data, num_predictions=1)
+                # 期望值模型返回的是索引列表的列表，需要处理成号码
+                if not red_preds or not blue_preds:
+                    raise ValueError("期望值模型返回了空的预测结果")
+                    
                 red_numbers = [idx + 1 for idx in red_preds[0]]  # 索引转换为号码
                 blue_numbers = [idx + 1 for idx in blue_preds[0]]
                 
@@ -1363,13 +1366,14 @@ class LotteryMLModels:
                 blue_numbers.sort()
                 
                 return red_numbers, blue_numbers
-            self.log("期望值模型预测失败")
-            return None, None
+            except Exception as e:
+                self.log(f"期望值模型预测失败: {str(e)}")
+                raise ValueError(f"期望值模型预测失败: {str(e)}")
         
         # 确保模型已加载
         if 'red' not in self.models or 'blue' not in self.models:
             self.log("模型未加载，无法预测")
-            return None, None
+            raise ValueError(f"模型未正确加载，请先训练或加载模型。")
         
         # 对于其他模型的处理保持不变
         # 提取红蓝球列名
@@ -1386,7 +1390,7 @@ class LotteryMLModels:
         # 确保有足够的历史数据
         if len(recent_data) < self.feature_window:
             self.log(f"历史数据不足，需要至少 {self.feature_window} 期")
-            return None, None
+            raise ValueError(f"历史数据不足，需要至少 {self.feature_window} 期数据。当前仅有 {len(recent_data)} 期。")
         
         # 创建特征序列
         X_data = []
@@ -1476,7 +1480,7 @@ class LotteryMLModels:
                 # 集成模型需要单独处理
                 if not isinstance(self.models['red'], dict) or not self.models['red']:
                     self.log("错误：集成模型未正确加载，红球模型为空")
-                    return None, None
+                    raise ValueError("集成模型未正确加载，红球模型为空。请重新训练模型。")
                 red_votes = {}
                 for name, model in self.models['red'].items():
                     preds = model.predict(X_scaled)[0]
@@ -1496,7 +1500,7 @@ class LotteryMLModels:
                 # 单一模型预测
                 if 'red' not in self.models or not hasattr(self.models['red'], 'predict'):
                     self.log("错误：红球模型未正确加载或缺少predict方法")
-                    return None, None
+                    raise ValueError("红球模型未正确加载或缺少predict方法。请重新训练模型。")
                 red_pred = self.models['red'].predict(X_scaled)[0]
                 if hasattr(red_pred, "__iter__"):
                     red_predictions = [int(p) + 1 for p in red_pred]  # +1 转回原始号码范围
@@ -1508,7 +1512,7 @@ class LotteryMLModels:
                 # 集成模型需要单独处理
                 if not isinstance(self.models['blue'], dict) or not self.models['blue']:
                     self.log("错误：集成模型未正确加载，蓝球模型为空")
-                    return None, None
+                    raise ValueError("集成模型未正确加载，蓝球模型为空。请重新训练模型。")
                 blue_votes = {}
                 for name, model in self.models['blue'].items():
                     preds = model.predict(X_scaled)[0]
@@ -1538,7 +1542,7 @@ class LotteryMLModels:
                 # 单一模型预测
                 if 'blue' not in self.models or not hasattr(self.models['blue'], 'predict'):
                     self.log("错误：蓝球模型未正确加载或缺少predict方法")
-                    return None, None
+                    raise ValueError("蓝球模型未正确加载或缺少predict方法。请重新训练模型。")
                 blue_pred = self.models['blue'].predict(X_scaled)[0]
                 if hasattr(blue_pred, "__iter__"):
                     # 随机设定阈值，增加随机性
@@ -1562,9 +1566,8 @@ class LotteryMLModels:
             self.log(f"预测过程中出错: {e}")
             import traceback
             self.log(traceback.format_exc())
-            # 出错时返回随机号码
-            red_predictions = []
-            blue_predictions = []
+            # 不再返回随机号码，而是抛出异常
+            raise ValueError(f"预测过程中出错: {e}")
             
         # 生成完整号码集
         while len(red_predictions) < self.red_count:
