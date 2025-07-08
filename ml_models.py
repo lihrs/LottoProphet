@@ -1314,6 +1314,15 @@ class LotteryMLModels:
         Returns:
             预测的红球和蓝球号码
         """
+        # 首先检查模型是否已加载
+        if 'red' not in self.models or 'blue' not in self.models:
+            # 尝试重新加载模型
+            self.log("模型未加载，尝试重新加载...")
+            load_success = self.load_models()
+            if not load_success:
+                self.log("错误：模型加载失败，请先训练模型")
+                raise ValueError(f"模型未正确加载，请先训练或加载模型。")
+        
         # 检查是否使用期望值模型
         if self.model_type == 'expected_value' and EXPECTED_VALUE_MODEL_AVAILABLE:
             # 检查模型是否已经加载

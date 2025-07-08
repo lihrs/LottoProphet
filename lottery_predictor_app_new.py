@@ -393,11 +393,22 @@ class LotteryPredictorApp(QMainWindow):
                 ml_model = self.ml_models[model_key]
                 self.log_emitter.new_log.emit(f"已加载 {MODEL_TYPES[model_type]} 模型 for {lottery_name}")
                 
+                # 再次确认模型已正确加载
+                if 'red' not in ml_model.models or 'blue' not in ml_model.models:
+                    self.log_emitter.new_log.emit(f"模型未完全加载，尝试重新加载...")
+                    if not ml_model.load_models():
+                        raise ValueError(f"模型{MODEL_TYPES[model_type]}未能正确加载，请先训练模型。")
+                    self.log_emitter.new_log.emit(f"模型重新加载完成")
+                
                 df = load_lottery_data(lottery_type)
                 recent_data = df.sort_values('期数', ascending=False).head(ml_model.feature_window)
                 
                 for i in range(num_predictions):
-                    red_predictions, blue_predictions = ml_model.predict(recent_data)
+                    try:
+                        red_predictions, blue_predictions = ml_model.predict(recent_data)
+                    except Exception as e:
+                        self.log_emitter.new_log.emit(f"预测失败: {str(e)}")
+                        raise ValueError(f"预测失败: {str(e)}")
                     
                     if red_predictions is None or blue_predictions is None:
                         raise ValueError(f"预测失败，请检查数据或重新训练模型。")
@@ -933,10 +944,15 @@ class LotteryPredictorApp(QMainWindow):
             # 显示最近的开奖数据
             self.ev_log_box.append("<b>最近的开奖数据：</b>")
             for _, row in recent_data.head(5).iterrows():
-                if lottery_type == "dlt":
-                    ball_info = f"期数: {row['期数']} 红球: {row['红球_1']} {row['红球_2']} {row['红球_3']} {row['红球_4']} {row['红球_5']} 蓝球: {row['蓝球_1']} {row['蓝球_2']}"
-                else:
-                    ball_info = f"期数: {row['期数']} 红球: {row['红球_1']} {row['红球_2']} {row['红球_3']} {row['红球_4']} {row['红球_5']} {row['红球_6']} 蓝球: {row['蓝球']}"
+                try:
+                    if lottery_type == "dlt":
+                        ball_info = f"期数: {row['期数']} 红球: {row['红球_1']} {row['红球_2']} {row['红球_3']} {row['红球_4']} {row['红球_5']} 蓝球: {row['蓝球_1']} {row['蓝球_2']}"
+                    else:  # ssq
+                        # 对于双色球，蓝球列名是'蓝球'
+                        ball_info = f"期数: {row['期数']} 红球: {row['红球_1']} {row['红球_2']} {row['红球_3']} {row['红球_4']} {row['红球_5']} {row['红球_6']} 蓝球: {row['蓝球']}"
+                except KeyError as e:
+                    self.ev_log_box.append(f"<font color='red'>错误: 无法访问列 {str(e)}，请检查数据格式。</font>")
+                    return
                 self.ev_log_box.append(ball_info)
             
             # 显示概率分布
