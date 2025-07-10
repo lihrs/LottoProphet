@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 背景圆形 -->
+  <circle cx="256" cy="256" r="240" fill="#4a86e8" />
+  
+  <!-- 彩票外框 -->
+  <rect x="136" y="136" width="240" height="240" rx="20" ry="20" fill="#ffffff" stroke="#333333" stroke-width="8" />
+  
+  <!-- 彩票标题 -->
+  <rect x="136" y="136" width="240" height="40" rx="10" ry="10" fill="#f1c232" />
+  <text x="256" y="164" font-family="Arial, sans-serif" font-size="24" font-weight="bold" text-anchor="middle" fill="#333333">LottoProphet</text>
+  
+  <!-- 红球 -->
+  <circle cx="176" cy="216" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="176" y="224" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">7</text>
+  
+  <circle cx="226" cy="216" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="226" y="224" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">12</text>
+  
+  <circle cx="276" cy="216" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="276" y="224" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">18</text>
+  
+  <circle cx="326" cy="216" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="326" y="224" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">25</text>
+  
+  <circle cx="176" cy="266" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="176" y="274" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">29</text>
+  
+  <circle cx="226" cy="266" r="20" fill="#e06666" stroke="#333333" stroke-width="2" />
+  <text x="226" y="274" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">33</text>
+  
+  <!-- 蓝球 -->
+  <circle cx="276" cy="266" r="20" fill="#3d85c6" stroke="#333333" stroke-width="2" />
+  <text x="276" y="274" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#ffffff">6</text>
+  
+  <!-- 预测线 -->
+  <line x1="156" y1="316" x2="316" y2="316" stroke="#333333" stroke-width="2" stroke-dasharray="5,5" />
+  <line x1="156" y1="336" x2="316" y2="336" stroke="#333333" stroke-width="2" stroke-dasharray="5,5" />
+  <line x1="156" y1="356" x2="316" y2="356" stroke="#333333" stroke-width="2" stroke-dasharray="5,5" />
+  
+  <!-- 预测图标 -->
+  <path d="M336,316 L356,316 L356,356 L336,356 Z" fill="#6aa84f" />
+  <text x="346" y="342" font-family="Arial, sans-serif" font-size="24" font-weight="bold" text-anchor="middle" fill="#ffffff">✓</text>
+</svg>
