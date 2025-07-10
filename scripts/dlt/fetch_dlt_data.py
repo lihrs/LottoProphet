@@ -227,7 +227,7 @@ def fetch_dlt_data():
     save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dlt_history.csv")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     try:
-        df.to_csv(save_path, encoding="gbk", index=False)
+        df.to_csv(save_path, encoding="utf-8", index=False)
         logging.info(f"数据已保存至 {save_path}")
     except Exception as e:
         logging.warning(f"文件保存到CVS失败 {e}")

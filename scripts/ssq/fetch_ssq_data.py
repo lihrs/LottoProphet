@@ -232,7 +232,7 @@ def fetch_ssq_data():
     save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), data_file_name)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     try:
-        df.to_csv(save_path, encoding="gbk", index=False)
+        df.to_csv(save_path, encoding="utf-8", index=False)
         logging.info(f"数据已保存至 {save_path}")
     except Exception as e:
         logging.warning(f"保存数据到CSV时出错: {e}")
