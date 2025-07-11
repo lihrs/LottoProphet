@@ -20,6 +20,74 @@
    ```
 ---
 
+## 安装方法
+
+### 方法一：使用安装程序（推荐）
+
+#### Windows
+
+1. 下载最新的 `LottoProphet-x.x.x-Setup.exe` 安装程序
+2. 双击运行安装程序，按照向导完成安装
+3. 从开始菜单或桌面快捷方式启动应用
+
+#### macOS
+
+1. 下载最新的 `LottoProphet.dmg` 文件
+2. 双击打开 DMG 文件
+3. 将 LottoProphet 应用拖到 Applications 文件夹
+4. 从启动器或 Applications 文件夹启动应用
+
+### 方法二：直接运行源代码
+
+1. 克隆或下载项目代码
+
+```bash
+git clone https://github.com/zhaoyangpp/LottoProphet.git
+cd LottoProphet
+```
+
+2. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+3. 运行程序
+
+```bash
+python main.py
+```
+
+## 构建安装程序
+
+如果您想自己构建安装程序，可以使用提供的构建脚本：
+
+### Windows
+
+1. 安装 [NSIS](https://nsis.sourceforge.io/Download)（用于创建安装程序）
+2. 安装必要的Python依赖
+
+```bash
+pip install -r requirements.txt
+pip install PyInstaller cairosvg pillow
+```
+
+3. 运行构建脚本
+
+```bash
+python build.py
+```
+
+构建完成后，安装程序将位于 `dist` 目录中，名为 `LottoProphet-x.x.x-Setup.exe`
+
+### macOS
+
+```bash
+python build.py
+```
+
+构建完成后，DMG文件将位于 `dist` 目录中，名为 `LottoProphet.dmg`
+
 ## 目录结构
 
 ```plaintext
@@ -36,6 +104,9 @@ LottoProphet/
 ├── train_models.py                 # 模型训练脚本，用于命令行单独训练模型
 ├── theme_manager.py                # UI主题管理器，支持深色和浅色主题切换
 ├── model.py                        # 模型定义文件，包含神经网络结构
+├── build.py                        # 构建脚本，用于创建可执行文件和安装程序
+├── installer.nsi                   # NSIS安装程序脚本，用于创建Windows安装程序
+├── convert_icon.py                 # 图标转换脚本，将SVG转换为ICO格式
 ├── scripts/
 │   ├── data_analysis.py            # 数据分析工具，提供数据可视化和统计分析功能
 │   ├── advanced_statistics.py      # 高级统计分析，包含复杂统计指标计算和图表生成
