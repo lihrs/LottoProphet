@@ -58,6 +58,26 @@ def build_application(one_file=True, debug=False):
         cmd.append("--console")
     else:
         cmd.append("--windowed")
+        
+    # 在macOS上，设置target_arch
+    if platform.system() == "Darwin":
+        # 检测当前Python是否支持universal2
+        is_universal2_supported = False
+        try:
+            # 检查Python是否是从Python.org下载的universal2版本
+            import subprocess
+            result = subprocess.run(["file", sys.executable], capture_output=True, text=True)
+            if "universal2" in result.stdout:
+                is_universal2_supported = True
+                cmd.extend(["--target-arch", "universal2"])
+                print("设置为universal2架构以支持Intel和Apple Silicon处理器")
+            else:
+                print("警告: 当前Python不是universal2架构，将使用当前架构构建")
+                print("如需构建universal2应用，请从Python.org下载并安装universal2版本的Python")
+                print("下载地址: https://www.python.org/downloads/macos/")
+        except Exception as e:
+            print(f"检测Python架构时出错: {e}")
+            print("将使用当前架构构建")
     
     # 添加数据文件
     cmd.extend([
@@ -228,7 +248,14 @@ def create_dmg():
         return
     
     app_path = app_path[0]
-    dmg_name = f"{app_path.stem}.dmg"
+    dmg_name = f"{app_path.stem}-universal2.dmg"
+    
+    # 检测当前处理器架构
+    arch = platform.machine()
+    if arch == "arm64":
+        print("检测到Apple Silicon (M1/M2/M3)处理器")
+    else:
+        print(f"检测到处理器架构: {arch}")
     
     # 使用hdiutil创建DMG
     cmd = [
