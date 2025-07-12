@@ -33,9 +33,6 @@ def setup_environment():
         model_dir = os.path.join('model', lottery_type)
         os.makedirs(model_dir, exist_ok=True)
         
-        data_dir = os.path.join('data', lottery_type)
-        os.makedirs(data_dir, exist_ok=True)
-
 def fetch_data(lottery_type):
     """获取彩票数据"""
     logger.info(f"开始获取{lottery_type}彩票数据...")

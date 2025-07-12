@@ -63,9 +63,11 @@ def train_model(lottery_type, use_gpu, epochs):
             import torch
             if torch.cuda.is_available():
                 gpu_device = torch.cuda.get_device_name(0)
-                logger.info(f"检测到可用GPU: {gpu_device}")
+                logger.info(f"检测到可用CUDA GPU: {gpu_device}")
+            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                logger.info("检测到可用Apple M系列芯片GPU (MPS)")
             else:
-                logger.warning("未检测到CUDA可用的GPU，将使用CPU训练")
+                logger.warning("未检测到可用的GPU (CUDA或MPS)，将使用CPU训练")
                 use_gpu = False
         except Exception as e:
             logger.warning(f"检查GPU可用性时出错: {str(e)}")
@@ -140,4 +142,4 @@ def main():
     logger.info(f"所有处理完成，耗时: {end_time - start_time:.2f}秒")
 
 if __name__ == "__main__":
-    main() 
+    main()

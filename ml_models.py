@@ -133,7 +133,16 @@ class LotteryMLModels:
         
      
         if self.use_gpu:
-            self.log(f"ML模型使用GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else '不可用'}")
+            cuda_available = torch.cuda.is_available()
+            mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+            
+            if cuda_available:
+                self.log(f"ML模型使用CUDA GPU: {torch.cuda.get_device_name(0)}")
+            elif mps_available:
+                self.log("ML模型使用Apple M系列芯片GPU (MPS)")
+            else:
+                self.log("GPU不可用，ML模型使用CPU")
+                self.use_gpu = False
         else:
             self.log("ML模型使用CPU")
         
@@ -349,9 +358,16 @@ class LotteryMLModels:
         self.log(f"XGBoost参数: {params}")
         
         # 如果使用GPU并且GPU可用，则添加GPU参数
-        if self.use_gpu and torch.cuda.is_available():
-            params['tree_method'] = 'gpu_hist'  # 使用GPU加速
-            self.log("XGBoost使用GPU加速训练")
+        cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        
+        if self.use_gpu and cuda_available:
+            params['tree_method'] = 'gpu_hist'  # 使用CUDA GPU加速
+            self.log("XGBoost使用CUDA GPU加速训练")
+        elif self.use_gpu and mps_available:
+            # 注意：XGBoost目前可能不直接支持MPS，但我们保留这个检查以便未来兼容
+            self.log("警告：XGBoost可能不支持MPS后端，将使用CPU训练")
+            # 如果未来XGBoost支持MPS，可以在这里添加相应参数
         
         # 创建DMatrix数据结构
         dtrain = xgb.DMatrix(X_train, label=y_train)
@@ -498,9 +514,16 @@ class LotteryMLModels:
         
         self.log(f"LightGBM参数: {params}")
         
-        if self.use_gpu and torch.cuda.is_available():
-            params['device'] = 'gpu'  # 使用GPU加速
-            self.log("LightGBM使用GPU加速训练")
+        cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        
+        if self.use_gpu and cuda_available:
+            params['device'] = 'gpu'  # 使用CUDA GPU加速
+            self.log("LightGBM使用CUDA GPU加速训练")
+        elif self.use_gpu and mps_available:
+            # 注意：LightGBM目前可能不直接支持MPS，但我们保留这个检查以便未来兼容
+            self.log("警告：LightGBM可能不支持MPS后端，将使用CPU训练")
+            # 如果未来LightGBM支持MPS，可以在这里添加相应参数
         
         train_data = lgb.Dataset(X_train, label=y_train)
         

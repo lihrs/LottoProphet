@@ -68,12 +68,17 @@ class LotteryPredictorApp(QMainWindow):
         
         # 获取GPU信息
         self.has_cuda = False
+        self.has_mps = False
         self.cuda_info = "不可用"
         try:
             import torch
             self.has_cuda = torch.cuda.is_available()
+            self.has_mps = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+            
             if self.has_cuda:
-                self.cuda_info = f"可用 ({torch.cuda.get_device_name(0)})"
+                self.cuda_info = f"CUDA可用 ({torch.cuda.get_device_name(0)})"
+            elif self.has_mps:
+                self.cuda_info = "Apple M系列芯片GPU (MPS)可用"
         except:
             pass
         
@@ -214,12 +219,14 @@ class LotteryPredictorApp(QMainWindow):
 
         # 检查GPU状态
         use_gpu = self.gpu_checkbox.isChecked()
-        if use_gpu and not torch.cuda.is_available():
-            self.log_box.append("<font color='orange'>警告: GPU被选中但CUDA不可用，将使用CPU进行训练</font>")
+        if use_gpu and not (torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available())):
+            self.log_box.append("<font color='orange'>警告: GPU被选中但没有可用的GPU加速后端，将使用CPU进行训练</font>")
             use_gpu = False
-        elif use_gpu:
+        elif use_gpu and torch.cuda.is_available():
             gpu_info = torch.cuda.get_device_name(0)
-            self.log_box.append(f"<font color='green'>使用GPU训练: {gpu_info}</font>")
+            self.log_box.append(f"<font color='green'>使用CUDA GPU训练: {gpu_info}</font>")
+        elif use_gpu and hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            self.log_box.append(f"<font color='green'>使用Apple M系列芯片GPU (MPS)训练</font>")
         else:
             self.log_box.append("<font color='blue'>使用CPU训练</font>")
 
@@ -258,7 +265,7 @@ class LotteryPredictorApp(QMainWindow):
         self.train_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         self.lottery_combo.setEnabled(True)
-        self.gpu_checkbox.setEnabled(torch.cuda.is_available())
+        self.gpu_checkbox.setEnabled(torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available()))
         self.model_combo.setEnabled(True)
         self.log_emitter.new_log.emit("训练已完成。")
         
@@ -1053,12 +1060,14 @@ class LotteryPredictorApp(QMainWindow):
         
         # 检查GPU状态
         use_gpu = self.ev_gpu_checkbox.isChecked()
-        if use_gpu and not torch.cuda.is_available():
-            self.ev_log_box.append("<font color='orange'>警告: GPU被选中但CUDA不可用，将使用CPU进行训练</font>")
+        if use_gpu and not (torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available())):
+            self.ev_log_box.append("<font color='orange'>警告: GPU被选中但没有可用的GPU加速后端，将使用CPU进行训练</font>")
             use_gpu = False
-        elif use_gpu:
+        elif use_gpu and torch.cuda.is_available():
             gpu_info = torch.cuda.get_device_name(0)
-            self.ev_log_box.append(f"<font color='green'>使用GPU训练: {gpu_info}</font>")
+            self.ev_log_box.append(f"<font color='green'>使用CUDA GPU训练: {gpu_info}</font>")
+        elif use_gpu and hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            self.ev_log_box.append(f"<font color='green'>使用Apple M系列芯片GPU (MPS)训练</font>")
         else:
             self.ev_log_box.append("<font color='blue'>使用CPU训练</font>")
         
@@ -1079,7 +1088,7 @@ class LotteryPredictorApp(QMainWindow):
                 self.ev_log_box.append("<font color='red'>错误: 无法加载历史数据。</font>")
                 self.ev_train_button.setEnabled(True)
                 self.ev_lottery_combo.setEnabled(True)
-                self.ev_gpu_checkbox.setEnabled(torch.cuda.is_available())
+                self.ev_gpu_checkbox.setEnabled(torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available()))
                 return
             
             self.ev_log_box.append(f"成功加载{len(df)}条历史数据")
@@ -1117,7 +1126,7 @@ class LotteryPredictorApp(QMainWindow):
         finally:
             self.ev_train_button.setEnabled(True)
             self.ev_lottery_combo.setEnabled(True)
-            self.ev_gpu_checkbox.setEnabled(torch.cuda.is_available())
+            self.ev_gpu_checkbox.setEnabled(torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available()))
     
     def show_ev_log_context_menu(self, position):
         """
@@ -1165,7 +1174,7 @@ def train_model(lottery_type, model_type, log_callback=None):
         log_callback(f"开始训练{lottery_type}预测模型({MODEL_TYPES.get(model_type, model_type)})...")
         
         # 确定GPU可用性
-        use_gpu = torch.cuda.is_available()
+        use_gpu = torch.cuda.is_available() or (hasattr(torch, 'mps') and torch.backends.mps.is_available())
         device_info = torch.cuda.get_device_name(0) if use_gpu else "CPU"
         log_callback(f"GPU训练已{'' if use_gpu else '不'}启用，使用设备: {device_info}")
         

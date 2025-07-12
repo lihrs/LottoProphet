@@ -30,12 +30,19 @@ def create_main_tab(main_tab):
     
 
     cuda_available = False
+    mps_available = False
+    gpu_available = False
     cuda_device = "不可用"
     try:
         import torch
         cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        gpu_available = cuda_available or mps_available
+        
         if cuda_available:
-            cuda_device = torch.cuda.get_device_name(0)
+            cuda_device = f"CUDA可用 ({torch.cuda.get_device_name(0)})"
+        elif mps_available:
+            cuda_device = "Apple M系列芯片GPU (MPS)可用"
     except:
         pass
     
@@ -69,9 +76,9 @@ def create_main_tab(main_tab):
     prediction_spin.setValue(5)
     
     gpu_checkbox = QCheckBox("使用GPU训练")
-    gpu_checkbox.setChecked(cuda_available)
-    gpu_checkbox.setEnabled(cuda_available)
-    if not cuda_available:
+    gpu_checkbox.setChecked(gpu_available)
+    gpu_checkbox.setEnabled(gpu_available)
+    if not gpu_available:
         gpu_checkbox.setToolTip("您的系统未安装GPU版本的PyTorch或没有可用的CUDA设备")
     else:
         gpu_checkbox.setToolTip(f"使用GPU加速训练 ({cuda_device})")
@@ -364,8 +371,10 @@ def create_expected_value_tab(expected_value_tab):
     
     gpu_checkbox = QCheckBox("使用GPU训练")
     cuda_available = torch.cuda.is_available()
-    gpu_checkbox.setChecked(cuda_available)
-    gpu_checkbox.setEnabled(cuda_available)
+    mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+    gpu_available = cuda_available or mps_available
+    gpu_checkbox.setChecked(gpu_available)
+    gpu_checkbox.setEnabled(gpu_available)
     train_layout.addWidget(gpu_checkbox)
     
     # 添加控制按钮

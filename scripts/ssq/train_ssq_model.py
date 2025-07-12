@@ -41,6 +41,11 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(RANDOM_SEED)
+# 支持M1处理器
+MPS_AVAILABLE = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+GPU_AVAILABLE = torch.cuda.is_available() or MPS_AVAILABLE
+if MPS_AVAILABLE:
+    logger.info("MPS (Metal Performance Shaders) 后端可用，支持M1/M2处理器加速")
 
 # 模型定义
 class LSTMCRF(nn.Module):
@@ -157,10 +162,17 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
     # 初始化模型
     model = LSTMCRF(input_dim, hidden_dim, output_dim, output_seq_length)
     
-    # 使用GPU（如果可用且要求使用）
-    if use_gpu and torch.cuda.is_available():
-        device = torch.device("cuda")
-        logger.info(f"使用GPU训练: {torch.cuda.get_device_name(0)}")
+    # 设备选择逻辑
+    if use_gpu:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            logger.info(f"使用CUDA GPU训练: {torch.cuda.get_device_name(0)}")
+        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            device = torch.device("mps")
+            logger.info("使用Apple M系列芯片GPU训练 (MPS)")
+        else:
+            device = torch.device("cpu")
+            logger.info("GPU不可用，使用CPU训练")
     else:
         device = torch.device("cpu")
         logger.info("使用CPU训练")
@@ -235,8 +247,10 @@ def main():
     # 检查GPU是否可用
     if args.gpu:
         if torch.cuda.is_available():
-            logger.info(f"GPU可用: {torch.cuda.get_device_name(0)}")
+            logger.info(f"CUDA GPU可用: {torch.cuda.get_device_name(0)}")
             logger.info(f"CUDA版本: {torch.version.cuda}")
+        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            logger.info("Apple M系列芯片GPU加速可用 (MPS)")
         else:
             logger.warning("GPU不可用，将使用CPU训练")
             args.gpu = False

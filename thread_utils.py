@@ -63,16 +63,22 @@ class TrainModelThread(QThread):
                 script_path = "./scripts/ssq/train_ssq_model.py"
         
         # GPU可用性检查
-        gpu_available = torch.cuda.is_available()
+        cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        gpu_available = cuda_available or mps_available
+        
         if self.use_gpu and not gpu_available:
-            self.log_signal.emit("警告: 已选择使用GPU但CUDA不可用，将使用CPU训练。")
+            self.log_signal.emit("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练。")
             self.use_gpu = False
         
         # 构建命令，根据是否使用GPU添加--gpu参数
         command = [sys.executable, script_path]
         if self.use_gpu:
             command.append("--gpu")
-            self.log_signal.emit(f"GPU训练已启用，使用设备: {torch.cuda.get_device_name(0)}")
+            if cuda_available:
+                self.log_signal.emit(f"CUDA GPU训练已启用，使用设备: {torch.cuda.get_device_name(0)}")
+            elif mps_available:
+                self.log_signal.emit("Apple M系列芯片GPU (MPS)训练已启用")
         else:
             self.log_signal.emit("使用CPU训练")
         
@@ -119,13 +125,19 @@ class TrainModelThread(QThread):
             from scripts.data_analysis import load_lottery_data
             
             # GPU可用性检查
-            gpu_available = torch.cuda.is_available()
+            cuda_available = torch.cuda.is_available()
+            mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+            gpu_available = cuda_available or mps_available
+            
             if self.use_gpu and not gpu_available:
-                self.log_signal.emit("警告: 已选择使用GPU但CUDA不可用，将使用CPU训练。")
+                self.log_signal.emit("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练。")
                 self.use_gpu = False
             
             if self.use_gpu:
-                self.log_signal.emit(f"GPU训练已启用，使用设备: {torch.cuda.get_device_name(0)}")
+                if cuda_available:
+                    self.log_signal.emit(f"CUDA GPU训练已启用，使用设备: {torch.cuda.get_device_name(0)}")
+                elif mps_available:
+                    self.log_signal.emit("Apple M系列芯片GPU (MPS)训练已启用")
             else:
                 self.log_signal.emit("使用CPU训练")
             
@@ -260,4 +272,4 @@ class UpdateDataThread(QThread):
         except Exception as e:
             self.log_signal.emit(f"更新数据时出错: {str(e)}")
         finally:
-            self.finished_signal.emit() 
+            self.finished_signal.emit()
