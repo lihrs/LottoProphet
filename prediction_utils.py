@@ -125,36 +125,80 @@ def randomize_numbers(numbers, lottery_type):
     else:
         return numbers  # 未知类型，返回原始号码
 
-def sample_crf_sequences(crf_model, emissions, mask, num_samples=1, temperature=1.0):
+def sample_crf_sequences(crf_model, emissions, mask, num_samples=1, temperature=1.0, top_k=0, diversity=0.0):
     """
-    从CRF模型中采样序列
+    从CRF模型中采样序列，支持多样性采样和温度调节
     
     Args:
         crf_model: CRF模型
         emissions: 发射概率
         mask: 掩码
         num_samples: 采样数量
-        temperature: 温度参数，控制随机性
+        temperature: 温度参数，控制随机性（较高的值增加随机性）
+        top_k: 如果>0，只从概率最高的k个标签中采样
+        diversity: 多样性参数，控制不同样本之间的差异（0-1之间）
         
     Returns:
-        采样的序列列表
+        采样的序列列表，每个批次有num_samples个样本
     """
     batch_size, seq_length, num_tags = emissions.size()
     emissions = emissions.cpu().numpy()
     mask = mask.cpu().numpy()
 
-    sampled_sequences = []
+    all_sampled_sequences = []
 
     for i in range(batch_size):
+        batch_samples = []
         seq_mask = mask[i]
         seq_emissions = emissions[i][:seq_mask.sum()]
-        seq_sample = []
-        for t, emission in enumerate(seq_emissions):
-            emission = emission / temperature
-            probs = np.exp(emission - np.max(emission))
-            probs /= probs.sum()
-            sampled_tag = np.random.choice(num_tags, p=probs)
-            seq_sample.append(sampled_tag)
-        sampled_sequences.append(seq_sample)
+        
+        for sample_idx in range(num_samples):
+            seq_sample = []
+            
+            # 对每个时间步进行采样
+            for t, emission in enumerate(seq_emissions):
+                # 应用温度缩放
+                scaled_emission = emission / temperature
+                
+                # 计算概率分布
+                probs = np.exp(scaled_emission - np.max(scaled_emission))
+                probs = probs / probs.sum()
+                
+                # 应用top-k过滤
+                if top_k > 0 and top_k < num_tags:
+                    # 获取top-k索引和概率
+                    top_indices = np.argsort(-probs)[:top_k]
+                    top_probs = probs[top_indices]
+                    top_probs = top_probs / top_probs.sum()  # 重新归一化
+                    
+                    # 从top-k中采样
+                    sampled_tag = top_indices[np.random.choice(len(top_indices), p=top_probs)]
+                else:
+                    # 从完整分布中采样
+                    sampled_tag = np.random.choice(num_tags, p=probs)
+                
+                seq_sample.append(sampled_tag)
+            
+            # 应用多样性增强
+            if diversity > 0 and sample_idx > 0:
+                # 与之前的样本比较，如果太相似则重新采样部分标签
+                for prev_sample in batch_samples:
+                    similarity = sum(1 for a, b in zip(seq_sample, prev_sample) if a == b) / len(seq_sample)
+                    if similarity > (1 - diversity):
+                        # 随机选择一些位置重新采样
+                        positions_to_resample = np.random.choice(
+                            len(seq_sample), 
+                            size=max(1, int(diversity * len(seq_sample))), 
+                            replace=False
+                        )
+                        for pos in positions_to_resample:
+                            emission = seq_emissions[pos] / temperature
+                            probs = np.exp(emission - np.max(emission))
+                            probs /= probs.sum()
+                            seq_sample[pos] = np.random.choice(num_tags, p=probs)
+            
+            batch_samples.append(seq_sample)
+        
+        all_sampled_sequences.extend(batch_samples)
 
-    return sampled_sequences 
+    return all_sampled_sequences

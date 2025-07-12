@@ -118,7 +118,9 @@ class LotteryMLModels:
         self.log_callback = log_callback
         self.use_gpu = use_gpu
         
-     
+        # 初始化模型权重字典
+        self.model_weights = {}
+        
         self.raw_models = {}
         
    
@@ -251,9 +253,33 @@ class LotteryMLModels:
         self.scalers['X'] = scaler
         
         # 拆分训练集和测试集
-        X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
-            X_scaled, y_red, y_blue, test_size=test_size, random_state=42
-        )
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        if y_red.ndim > 1:
+            # 对于多个红球，检查第一个位置的分布
+            red_class_counts = Counter(y_red[:, 0])
+        else:
+            red_class_counts = Counter(y_red)
+        min_red_samples = min(red_class_counts.values())
+        
+        if min_red_samples < 2:
+            self.log(f"警告: 红球数据中某些类别样本数量过少(最少{min_red_samples}个)，使用随机拆分")
+            # 直接使用随机拆分，不使用分层抽样
+            X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
+                X_scaled, y_red, y_blue, test_size=test_size, random_state=42, stratify=None
+            )
+        else:
+            try:
+                # 尝试使用默认拆分
+                X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
+                    X_scaled, y_red, y_blue, test_size=test_size, random_state=42
+                )
+            except ValueError as e:
+                self.log(f"警告: 数据拆分失败，原因: {str(e)}")
+                # 如果失败，尝试不使用stratify参数
+                X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
+                    X_scaled, y_red, y_blue, test_size=test_size, random_state=42, stratify=None
+                )
         
         # 对于ML模型，需要将多维标签展平为单维
         if y_red_train.ndim > 1:
@@ -281,27 +307,93 @@ class LotteryMLModels:
         return X_train, X_test, y_red_class, y_red_test[:, self.red_pos], y_blue_class, y_blue_test[:, self.blue_pos] if y_blue_test.shape[1] > 0 else np.zeros(y_blue_test.shape[0], dtype=int)
     
     def train_random_forest(self, X_train, y_train, ball_type, n_estimators=100):
-        """训练随机森林模型"""
+        """训练随机森林模型，使用交叉验证和超参数调优"""
         from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+        from scipy.stats import randint, uniform
         
         self.log(f"训练{ball_type}球随机森林模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
-        self.log(f"随机森林参数: n_estimators={n_estimators}, max_depth=10")
         
-        # 创建模型
-        model = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=10,
-            min_samples_split=2,
-            min_samples_leaf=1,
+        # 创建基础模型
+        base_model = RandomForestClassifier(
             random_state=42,
             n_jobs=-1,
-            verbose=1  # 启用详细输出
+            class_weight='balanced',  # 处理类别不平衡问题
+            bootstrap=True,  # 使用bootstrap样本
+            oob_score=True,  # 使用袋外样本评估模型
+            verbose=0  # 减少输出
         )
         
-        # 训练模型
-        self.log(f"开始训练随机森林模型...")
-        model.fit(X_train, y_train)
+        # 设置超参数搜索空间
+        param_dist = {
+            'n_estimators': randint(100, 300),
+            'max_depth': [None, 10, 15, 20, 25],
+            'min_samples_split': randint(2, 11),
+            'min_samples_leaf': randint(1, 5),
+            'max_features': ['sqrt', 'log2', None]
+        }
+        
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 创建交叉验证对象
+        if min_samples < 2:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用普通KFold代替StratifiedKFold")
+            from sklearn.model_selection import KFold
+            cv = KFold(n_splits=5, shuffle=True, random_state=42)
+        else:
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        
+        # 创建随机搜索对象
+        self.log("开始随机森林超参数随机搜索...")
+        random_search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_dist,
+            n_iter=20,  # 搜索20组参数
+            cv=cv,
+            scoring='accuracy',
+            verbose=0,
+            n_jobs=-1,
+            random_state=42
+        )
+        
+        try:
+            # 执行随机搜索
+            random_search.fit(X_train, y_train)
+        except ValueError as e:
+            if "The least populated class in y has only 1 member" in str(e):
+                self.log(f"警告: 随机森林参数搜索失败，使用默认参数。原因: {str(e)}")
+                # 使用默认参数创建模型
+                model = RandomForestClassifier(
+                    n_estimators=100,
+                    max_depth=None,
+                    min_samples_split=2,
+                    min_samples_leaf=1,
+                    max_features='sqrt',
+                    random_state=42,
+                    n_jobs=-1,
+                    class_weight='balanced'
+                )
+                model.fit(X_train, y_train)
+                self.log(f"{ball_type}球随机森林模型训练完成(使用默认参数)")
+                return model
+            else:
+                raise
+        
+        # 获取最佳参数和模型
+        best_params = random_search.best_params_
+        best_score = random_search.best_score_
+        model = random_search.best_estimator_
+        
+        self.log(f"随机森林最佳参数: {best_params}")
+        self.log(f"随机森林交叉验证最佳得分: {best_score:.4f}")
+        
+        # 如果有袋外分数，输出它
+        if hasattr(model, 'oob_score_'):
+            self.log(f"随机森林袋外分数: {model.oob_score_:.4f}")
         
         # 输出特征重要性
         if hasattr(model, 'feature_importances_'):
@@ -337,43 +429,62 @@ class LotteryMLModels:
         return raw_preds
     
     def train_xgboost(self, X_train, y_train, ball_type):
-        """训练XGBoost模型"""
+        """训练XGBoost模型，使用交叉验证和超参数调优"""
         import xgboost as xgb
+        from sklearn.model_selection import StratifiedKFold
+        import numpy as np
         
         self.log(f"训练{ball_type}球XGBoost模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
         
-        # 设置参数，如果使用GPU，则使用GPU实现
-        params = {
+        # 设置基础参数
+        base_params = {
             'objective': 'multi:softmax',
             'num_class': self.red_range + 1 if ball_type == 'red' else self.blue_range + 1,
-            'learning_rate': 0.1,
-            'max_depth': 6,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'eval_metric': 'mlogloss',
-            'verbosity': 0 
+            'verbosity': 0,
+            'eval_metric': ['mlogloss', 'merror'],  # 添加多个评估指标
         }
-        
-        self.log(f"XGBoost参数: {params}")
         
         # 如果使用GPU并且GPU可用，则添加GPU参数
         cuda_available = torch.cuda.is_available()
         mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
         
         if self.use_gpu and cuda_available:
-            params['tree_method'] = 'gpu_hist'  # 使用CUDA GPU加速
+            base_params['tree_method'] = 'gpu_hist'  # 使用CUDA GPU加速
             self.log("XGBoost使用CUDA GPU加速训练")
         elif self.use_gpu and mps_available:
-            # 注意：XGBoost目前可能不直接支持MPS，但我们保留这个检查以便未来兼容
             self.log("警告：XGBoost可能不支持MPS后端，将使用CPU训练")
-            # 如果未来XGBoost支持MPS，可以在这里添加相应参数
+        else:
+            base_params['tree_method'] = 'hist'  # 使用快速直方图算法
         
         # 创建DMatrix数据结构
         dtrain = xgb.DMatrix(X_train, label=y_train)
         
-        # 设置评估列表，用于记录训练进度
-        watchlist = [(dtrain, 'train')]
+        # 定义超参数搜索空间
+        param_grid = [
+            {'max_depth': 3, 'learning_rate': 0.1, 'subsample': 0.8, 'colsample_bytree': 0.8, 'min_child_weight': 1},
+            {'max_depth': 5, 'learning_rate': 0.05, 'subsample': 0.7, 'colsample_bytree': 0.7, 'min_child_weight': 3},
+            {'max_depth': 7, 'learning_rate': 0.01, 'subsample': 0.9, 'colsample_bytree': 0.9, 'min_child_weight': 5},
+            {'max_depth': 6, 'learning_rate': 0.03, 'subsample': 0.85, 'colsample_bytree': 0.85, 'min_child_weight': 2},
+            {'max_depth': 4, 'learning_rate': 0.07, 'subsample': 0.75, 'colsample_bytree': 0.75, 'min_child_weight': 4}
+        ]
+        
+        # 设置交叉验证
+        cv_folds = 5
+        
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 根据样本数量决定是否使用分层抽样
+        use_stratified = min_samples >= 2
+        if not use_stratified:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，XGBoost交叉验证将不使用分层抽样")
+            from sklearn.model_selection import KFold
+            kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=42)
+        else:
+            kfold = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
         
         # 使用正确的XGBoost回调函数API
         class XGBCallback(xgb.callback.TrainingCallback):
@@ -391,15 +502,87 @@ class LotteryMLModels:
                 self.iteration += 1
                 return False
         
-        # 创建回调函数，确保始终使用回调
+        # 创建回调函数
         callbacks = [XGBCallback(self.log)]
         
-        # 训练模型
-        self.log(f"开始训练XGBoost模型...")
+        # 添加早停回调
+        early_stopping = xgb.callback.EarlyStopping(
+            rounds=10,
+            metric_name='merror',
+            data_name='eval',
+            save_best=True
+        )
+        callbacks.append(early_stopping)
+        
+        # 执行网格搜索
+        self.log("开始XGBoost超参数搜索...")
+        best_score = float('inf')
+        best_params = None
+        best_model = None
+        
+        for params in param_grid:
+            # 合并基础参数和当前参数集
+            current_params = {**base_params, **params}
+            self.log(f"测试参数: {params}")
+            
+            # 创建交叉验证数据集
+            cv_results = xgb.cv(
+                current_params,
+                dtrain,
+                num_boost_round=200,
+                nfold=cv_folds,
+                stratified=use_stratified,  # 根据样本数量决定是否使用分层抽样
+                early_stopping_rounds=20,
+                metrics=['merror'],
+                seed=42
+            )
+            
+            # 获取最佳迭代次数和错误率
+            best_iteration = len(cv_results)
+            best_error = cv_results['test-merror-mean'].iloc[-1]
+            self.log(f"参数 {params} 的最佳迭代次数: {best_iteration}, 错误率: {best_error:.6f}")
+            
+            # 更新最佳参数
+            if best_error < best_score:
+                best_score = best_error
+                best_params = current_params
+                best_params['num_boost_round'] = best_iteration
+        
+        # 使用最佳参数训练最终模型
+        self.log(f"使用最佳参数训练最终模型: {best_params}")
+        num_boost_round = best_params.pop('num_boost_round', 100)
+        
+        # 创建验证集用于早停
+        from sklearn.model_selection import train_test_split
+        from collections import Counter
+        
+        # 检查是否有类别样本数量过少的情况
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 根据样本数量决定是否使用分层抽样
+        use_stratified = min_samples >= 2
+        if use_stratified:
+            X_train_final, X_val, y_train_final, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+            )
+        else:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用随机抽样代替分层抽样")
+            X_train_final, X_val, y_train_final, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=None
+            )
+        dtrain_final = xgb.DMatrix(X_train_final, label=y_train_final)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        
+        # 设置评估列表
+        watchlist = [(dtrain_final, 'train'), (dval, 'eval')]
+        
+        # 训练最终模型
+        self.log("训练最终XGBoost模型...")
         model = xgb.train(
-            params, 
-            dtrain, 
-            num_boost_round=100, 
+            best_params, 
+            dtrain_final, 
+            num_boost_round=num_boost_round, 
             evals=watchlist,
             callbacks=callbacks,
             verbose_eval=False  # 禁用内置的输出，使用我们的回调
@@ -414,60 +597,270 @@ class LotteryMLModels:
             for i, (feature, score) in enumerate(sorted_importance[:10]):
                 self.log(f"  {i+1}. {feature}: {score:.4f}")
         
-    
+        # 评估最终模型
+        y_pred = model.predict(dval)
+        accuracy = np.mean(y_pred == y_val)
+        self.log(f"XGBoost验证集准确率: {accuracy:.4f}")
+        
+        # 保存原始模型
         self.raw_models[f'xgboost_{ball_type}'] = model
         
-    
+        # 包装模型
         wrapped_model = WrappedXGBoostModel(model, self.process_multidim_prediction)
         
         self.log(f"{ball_type}球XGBoost模型训练完成")
         return wrapped_model
     
     def train_gbdt(self, X_train, y_train, ball_type):
-        """训练梯度提升决策树模型"""
+        """训练梯度提升决策树模型，使用交叉验证和超参数调优"""
         from sklearn.ensemble import GradientBoostingClassifier
+        from sklearn.model_selection import GridSearchCV, StratifiedKFold
+        from sklearn.metrics import accuracy_score, make_scorer
+        from sklearn.model_selection import train_test_split, KFold
         
         self.log(f"训练{ball_type}球GBDT模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
         
-   
-        params = {
-            'n_estimators': 100,
-            'learning_rate': 0.1,
-            'max_depth': 5,
-            'random_state': 42,
-            'verbose': 0  # 减少自带的输出，使用我们自己的回调
+        # 创建验证集用于最终评估
+        # 首先检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        if min_samples < 2:
+            # 如果有类别样本数量过少，直接使用随机抽样
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用随机抽样代替分层抽样")
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=None
+            )
+        else:
+            try:
+                # 尝试使用分层抽样
+                X_train_main, X_val, y_train_main, y_val = train_test_split(
+                    X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+                )
+            except ValueError as e:
+                # 如果出现其他错误，则不使用分层抽样
+                self.log(f"警告: 分层抽样失败，使用随机抽样代替。原因: {str(e)}")
+                X_train_main, X_val, y_train_main, y_val = train_test_split(
+                    X_train, y_train, test_size=0.2, random_state=42, stratify=None
+                )
+        
+        # 基础模型参数
+        base_model = GradientBoostingClassifier(
+            random_state=42,
+            verbose=0,  # 减少自带的输出
+            validation_fraction=0.2,  # 用于早停的验证集比例
+            n_iter_no_change=10,  # 如果验证分数在10轮内没有改善，则停止
+            tol=1e-4  # 改善的容忍度
+        )
+        
+        # 设置超参数搜索空间 - 使用更小的搜索空间
+        param_grid = {
+            'n_estimators': [100, 200],
+            'learning_rate': [0.05, 0.1],
+            'max_depth': [3, 5],
+            'min_samples_split': [2, 5],
+            'min_samples_leaf': [1, 2],
+            'subsample': [0.8, 1.0]
         }
         
-        self.log(f"GBDT参数: {params}")
+        # 创建交叉验证对象
+        # 检查数据中是否存在样本数量少于2的类别
+        from collections import Counter
+        class_counts = Counter(y_train_main)
+        min_samples = min(class_counts.values())
         
-  
-        model = GradientBoostingClassifier(**params)
+        if min_samples < 2:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用普通KFold代替StratifiedKFold")
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)  # 使用普通KFold
+        else:
+            cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)  # 减少折数
         
-        self.log(f"开始训练GBDT模型...")
+        # 使用随机搜索替代网格搜索，大幅减少计算量
+        from sklearn.model_selection import RandomizedSearchCV
+        self.log("开始GBDT超参数随机搜索...")
         
-        n_estimators_per_batch = 10
-        total_estimators = params['n_estimators']
+        # 创建回调函数用于显示进度
+        class ProgressCallback:
+            def __init__(self, log_func, total_iters):
+                self.log_func = log_func
+                self.total_iters = total_iters
+                self.current_iter = 0
+                
+            def __call__(self, *args, **kwargs):
+                self.current_iter += 1
+                if self.current_iter % 5 == 0 or self.current_iter == self.total_iters:
+                    self.log_func(f"GBDT参数搜索进度: {self.current_iter}/{self.total_iters} ({self.current_iter/self.total_iters*100:.1f}%)")
+                return 0
+        
+        # 计算总迭代次数 (n_iter * cv折数)
+        n_iter = 10  # 随机搜索的迭代次数
+        total_iters = n_iter * cv.get_n_splits()
+        progress_callback = ProgressCallback(self.log, total_iters)
+        
+        random_search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_grid,
+            n_iter=n_iter,  # 只尝试10组参数组合
+            cv=cv,
+            scoring=make_scorer(accuracy_score),
+            n_jobs=-1,  # 使用所有可用的CPU核心
+            verbose=0,
+            random_state=42
+        )
+        
+        # 执行随机搜索
+        import time
+        start_time = time.time()
+        self.log("开始执行GBDT参数搜索...")
+        
+        # 由于sklearn的搜索没有回调机制，我们使用一个简单的定时器来显示进度
+        import threading
+        stop_event = threading.Event()
+        
+        def progress_monitor():
+            iter_count = 0
+            while not stop_event.is_set():
+                iter_count += 1
+                if iter_count % 5 == 0:
+                    elapsed = time.time() - start_time
+                    self.log(f"GBDT参数搜索进行中... 已用时: {elapsed:.1f}秒")
+                time.sleep(5)  # 每5秒更新一次
+        
+        # 启动进度监控线程
+        monitor_thread = threading.Thread(target=progress_monitor)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        
+        try:
+            # 检查是否有类别样本数量过少的情况
+            from collections import Counter
+            class_counts = Counter(y_train_main)
+            min_samples = min(class_counts.values())
+            
+            if min_samples < 2:
+                self.log(f"警告: 训练数据中某些类别样本数量过少(最少{min_samples}个)，跳过参数搜索")
+                # 直接使用默认参数创建模型，跳过参数搜索
+                # 不抛出错误，而是直接返回默认模型
+                model = GradientBoostingClassifier(
+                    n_estimators=100,
+                    learning_rate=0.1,
+                    max_depth=3,
+                    random_state=42,
+                    verbose=0
+                )
+                model.fit(X_train, y_train)
+                # 包装模型并返回
+                wrapped_model = WrappedGBDTModel(model, self.process_multidim_prediction)
+                self.raw_models[f'gbdt_{ball_type}'] = model
+                self.log(f"{ball_type}球GBDT模型训练完成(使用默认参数)")
+                return wrapped_model
+            else:
+                # 如果类别样本数量足够，添加error_score参数
+                random_search.error_score = 'raise'
+                # 尝试拟合模型
+                random_search.fit(X_train_main, y_train_main)
+            
+        except ValueError as e:
+            # 处理所有拟合失败的情况
+            self.log(f"GBDT参数搜索失败: {str(e)}")
+            self.log("使用默认参数训练模型...")
+            # 使用默认参数创建模型
+            model = GradientBoostingClassifier(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=3,
+                random_state=42,
+                verbose=0
+            )
+            model.fit(X_train, y_train)
+            # 包装模型并返回
+            wrapped_model = WrappedGBDTModel(model, self.process_multidim_prediction)
+            self.raw_models[f'gbdt_{ball_type}'] = model
+            self.log(f"{ball_type}球GBDT模型训练完成(使用默认参数)")
+            return wrapped_model
+        finally:
+            stop_event.set()  # 停止监控线程
+            elapsed = time.time() - start_time
+            self.log(f"GBDT参数搜索完成，总用时: {elapsed:.1f}秒")
+        
+        # 获取最佳参数和模型
+        best_params = random_search.best_params_
+        best_score = random_search.best_score_
+        
+        self.log(f"GBDT最佳参数: {best_params}")
+        self.log(f"GBDT交叉验证最佳得分: {best_score:.4f}")
+        
+        # 显示所有评估的参数组合及其得分
+        self.log("评估的参数组合及得分 (前5个):")
+        results = list(zip(random_search.cv_results_['params'], random_search.cv_results_['mean_test_score']))
+        results.sort(key=lambda x: x[1], reverse=True)
+        for i, (params, score) in enumerate(results[:5]):
+            self.log(f"  {i+1}. 得分: {score:.4f}, 参数: {params}")
+        
+        # 使用最佳参数创建最终模型
+        final_params = best_params.copy()
+        
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        if min_samples < 2:
+            self.log(f"警告: 最终训练数据中某些类别样本数量过少(最少{min_samples}个)，禁用早停功能和内部交叉验证")
+            # 只添加基本参数，禁用所有可能导致分层问题的功能
+            final_params.update({
+                'random_state': 42,
+                'verbose': 0
+            })
+        else:
+            # 如果样本数量足够，添加早停和验证功能
+            final_params.update({
+                'random_state': 42,
+                'verbose': 0,
+                'validation_fraction': 0.2,  # 用于早停的验证集比例
+                'n_iter_no_change': 10,  # 如果验证分数在10轮内没有改善，则停止
+                'tol': 1e-4  # 改善的容忍度
+            })
+        
+        self.log(f"使用最佳参数训练最终GBDT模型...")
+            
+        model = GradientBoostingClassifier(**final_params)
+        
+        # 使用分批训练方式，显示进度
+        n_estimators_per_batch = 20
+        total_estimators = final_params['n_estimators']
         
         init_model = GradientBoostingClassifier(
             n_estimators=n_estimators_per_batch,
-            learning_rate=params['learning_rate'],
-            max_depth=params['max_depth'],
-            random_state=params['random_state'],
-            warm_start=True  # 允许增量训练
+            learning_rate=final_params['learning_rate'],
+            max_depth=final_params['max_depth'],
+            min_samples_split=final_params['min_samples_split'],
+            min_samples_leaf=final_params['min_samples_leaf'],
+            subsample=final_params['subsample'],
+            random_state=42,
+            warm_start=True,  # 允许增量训练
+            verbose=0
         )
         
-        init_model.fit(X_train, y_train)
+        init_model.fit(X_train_main, y_train_main)
         
         for i in range(n_estimators_per_batch, total_estimators, n_estimators_per_batch):
             self.log(f"GBDT训练进度: {i}/{total_estimators} 棵树已完成 ({i/total_estimators*100:.1f}%)")
             init_model.n_estimators = min(i + n_estimators_per_batch, total_estimators)
-            init_model.fit(X_train, y_train)
+            init_model.fit(X_train_main, y_train_main)
         
         self.log(f"GBDT训练进度: {total_estimators}/{total_estimators} 棵树已完成 (100%)")
         
         model = init_model
         
+        # 在验证集上评估模型
+        y_pred = model.predict(X_val)
+        val_accuracy = accuracy_score(y_val, y_pred)
+        self.log(f"GBDT验证集准确率: {val_accuracy:.4f}")
+        
+        # 输出特征重要性
         if hasattr(model, 'feature_importances_'):
             feature_names = [f"特征_{i}" for i in range(X_train.shape[1])]
             if len(self.feature_cols) == X_train.shape[1]:
@@ -479,57 +872,84 @@ class LotteryMLModels:
             for i, (feature, importance) in enumerate(importance_data[:10]):
                 self.log(f"  {i+1}. {feature}: {importance:.4f}")
         
+        # 保存原始模型
         self.raw_models[f'gbdt_{ball_type}'] = model
         
+        # 包装模型
         wrapped_model = WrappedGBDTModel(model, self.process_multidim_prediction)
         
         self.log(f"{ball_type}球GBDT模型训练完成")
         return wrapped_model
     
     def train_lightgbm(self, X_train, y_train, ball_type):
-        """训练LightGBM模型"""
+        """训练LightGBM模型，使用交叉验证和超参数调优"""
         if not LIGHTGBM_AVAILABLE:
             self.log("LightGBM未安装，跳过此模型训练")
             return None
             
         import lightgbm as lgb
+        from sklearn.model_selection import train_test_split
+        import numpy as np
             
         self.log(f"训练{ball_type}球LightGBM模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
         
-        params = {
+        # 创建验证集用于早停和最终评估
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 根据样本数量决定是否使用分层抽样
+        use_stratified = min_samples >= 2
+        if use_stratified:
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+            )
+        else:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用随机抽样代替分层抽样")
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=None
+            )
+        
+        # 基础参数
+        base_params = {
             'objective': 'multiclass',
             'num_class': self.red_range + 1 if ball_type == 'red' else self.blue_range + 1,
             'boosting_type': 'gbdt',
-            'learning_rate': 0.1,
-            'num_leaves': 31,
-            'max_depth': -1,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'metric': 'multi_logloss',
-            'verbose': -1,  # 减少自带的输出，使用我们自己的回调
+            'metric': ['multi_logloss', 'multi_error'],  # 添加多个评估指标
+            'verbose': -1,  # 减少自带的输出
             'pred_early_stop': True,  # 早停预测
-            'predict_disable_shape_check': True  # 禁用形状检查
+            'predict_disable_shape_check': True,  # 禁用形状检查
+            'seed': 42,  # 设置随机种子
+            'deterministic': True,  # 确保结果可重现
+            'feature_pre_filter': False  # 允许动态改变min_data_in_leaf参数
         }
         
-        self.log(f"LightGBM参数: {params}")
-        
+        # 检查GPU可用性
         cuda_available = torch.cuda.is_available()
         mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
         
         if self.use_gpu and cuda_available:
-            params['device'] = 'gpu'  # 使用CUDA GPU加速
+            base_params['device'] = 'gpu'  # 使用CUDA GPU加速
             self.log("LightGBM使用CUDA GPU加速训练")
         elif self.use_gpu and mps_available:
-            # 注意：LightGBM目前可能不直接支持MPS，但我们保留这个检查以便未来兼容
             self.log("警告：LightGBM可能不支持MPS后端，将使用CPU训练")
-            # 如果未来LightGBM支持MPS，可以在这里添加相应参数
         
-        train_data = lgb.Dataset(X_train, label=y_train)
+        # 创建数据集
+        train_data = lgb.Dataset(X_train_main, label=y_train_main)
+        valid_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
         
-        valid_sets = [train_data]
-        valid_names = ['train']
+        # 定义超参数搜索空间
+        param_grid = [
+            {'learning_rate': 0.01, 'num_leaves': 31, 'max_depth': 6, 'min_data_in_leaf': 20, 'feature_fraction': 0.8, 'bagging_fraction': 0.8},
+            {'learning_rate': 0.05, 'num_leaves': 63, 'max_depth': 8, 'min_data_in_leaf': 15, 'feature_fraction': 0.7, 'bagging_fraction': 0.7},
+            {'learning_rate': 0.1, 'num_leaves': 127, 'max_depth': 10, 'min_data_in_leaf': 10, 'feature_fraction': 0.9, 'bagging_fraction': 0.9},
+            {'learning_rate': 0.03, 'num_leaves': 31, 'max_depth': -1, 'min_data_in_leaf': 30, 'feature_fraction': 0.85, 'bagging_fraction': 0.85},
+            {'learning_rate': 0.07, 'num_leaves': 63, 'max_depth': 12, 'min_data_in_leaf': 5, 'feature_fraction': 0.75, 'bagging_fraction': 0.75}
+        ]
         
+        # 进度回调函数
         def progress_callback(env):
             if env.iteration % 10 == 0 or env.iteration == env.end_iteration - 1:
                 try:
@@ -544,18 +964,90 @@ class LotteryMLModels:
                     self.log(f"记录LightGBM进度时出错: {str(e)}")
             return False
         
+        # 执行超参数搜索
+        self.log("开始LightGBM超参数搜索...")
+        best_score = float('inf')
+        best_params = None
+        best_rounds = 100
+        
+        for params in param_grid:
+            # 合并基础参数和当前参数集
+            current_params = {**base_params, **params}
+            self.log(f"测试参数: {params}")
+            
+            # 执行交叉验证
+            cv_results = lgb.cv(
+                current_params,
+                train_data,
+                num_boost_round=300,
+                nfold=5,
+                stratified=True,
+                # early_stopping_rounds参数在某些版本的LightGBM中不支持，移除此参数
+                # early_stopping_rounds=20,
+                metrics=['multi_error'],
+                seed=42
+                # verbose_eval参数在某些版本的LightGBM中不支持，移除此参数
+                # verbose_eval=False
+            )
+            
+            # 获取最佳迭代次数和错误率
+            # 检查cv_results的键名格式
+            metric_key = None
+            for key in cv_results.keys():
+                if 'multi_error' in key and 'mean' in key:
+                    metric_key = key
+                    break
+            
+            if not metric_key:
+                self.log(f"警告: 在cv_results中找不到multi_error相关的键，可用的键: {list(cv_results.keys())}")
+                # 使用默认值继续
+                best_iteration = 100
+                best_error = float('inf')
+            else:
+                best_iteration = len(cv_results[metric_key])
+                best_error = cv_results[metric_key][-1]
+            
+            self.log(f"参数 {params} 的最佳迭代次数: {best_iteration}, 错误率: {best_error:.6f}")
+            
+            # 更新最佳参数
+            if best_error < best_score:
+                best_score = best_error
+                best_params = current_params
+                best_rounds = best_iteration
+        
+        # 使用最佳参数训练最终模型
+        self.log(f"使用最佳参数训练最终模型: {best_params}")
+        self.log(f"最佳迭代次数: {best_rounds}")
+        
+        # 设置验证集和回调
+        valid_sets = [train_data, valid_data]
+        valid_names = ['train', 'valid']
         callbacks = [progress_callback]
         
-        self.log(f"开始训练LightGBM模型...")
+        # 训练最终模型
+        self.log("训练最终LightGBM模型...")
+        # 创建早停回调
+        early_stopping = lgb.early_stopping(stopping_rounds=20)
+        if early_stopping not in callbacks:
+            callbacks.append(early_stopping)
+            
         model = lgb.train(
-            params, 
+            best_params, 
             train_data, 
-            num_boost_round=100,
+            num_boost_round=best_rounds,
             valid_sets=valid_sets,
             valid_names=valid_names,
             callbacks=callbacks
+            # early_stopping_rounds参数在新版本中已移至callbacks
         )
         
+        # 在验证集上评估模型
+        y_pred = model.predict(X_val)
+        y_pred_class = np.argmax(y_pred, axis=1)
+        accuracy = np.mean(y_pred_class == y_val)
+        self.log(f"LightGBM验证集准确率: {accuracy:.4f}")
+        
+        # 输出特征重要性
         if hasattr(model, 'feature_importance'):
             try:
                 importances = model.feature_importance(importance_type='gain')
@@ -568,23 +1060,45 @@ class LotteryMLModels:
             except Exception as e:
                 self.log(f"获取LightGBM特征重要性时出错: {str(e)}")
         
+        # 保存原始模型
         self.raw_models[f'lightgbm_{ball_type}'] = model
         
+        # 包装模型
         wrapped_model = WrappedLightGBMModel(model, self.process_multidim_prediction)
         
         self.log(f"{ball_type}球LightGBM模型训练完成")
         return wrapped_model
     
     def train_catboost(self, X_train, y_train, ball_type):
-        """训练CatBoost模型"""
+        """训练CatBoost模型，使用交叉验证和超参数调优"""
         if not CATBOOST_AVAILABLE:
             self.log("CatBoost未安装，跳过此模型训练")
             return None
             
         import catboost as cb
+        from sklearn.model_selection import train_test_split
+        import numpy as np
             
         self.log(f"训练{ball_type}球CatBoost模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
+        
+        # 创建验证集用于早停和最终评估
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 根据样本数量决定是否使用分层抽样
+        use_stratified = min_samples >= 2
+        if use_stratified:
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+            )
+        else:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用随机抽样代替分层抽样")
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=None
+            )
         
         # 设置输出目录
         train_dir = f"catboost_info_{ball_type}"
@@ -592,31 +1106,39 @@ class LotteryMLModels:
         
         # 确定分类数
         if ball_type == 'red':
-            classes_count = self.red_range
+            classes_count = self.red_range + 1
         else:  # blue
-            classes_count = self.blue_range
+            classes_count = self.blue_range + 1
         
-        # 设置参数
-        params = {
+        # 基础参数
+        base_params = {
             'loss_function': 'MultiClass',
             'classes_count': classes_count,
-            'iterations': 100,
-            'learning_rate': 0.1,
-            'depth': 6,
             'random_seed': 42,
             'verbose': False,
-            'train_dir': train_dir
+            'train_dir': train_dir,
+            'eval_metric': 'MultiClass',  # 使用多分类评估指标
+            'use_best_model': True,  # 使用验证集上表现最好的模型
+            'od_type': 'Iter',  # 迭代次数早停类型
+            'od_wait': 20,  # 如果20轮内没有改善，则停止
+            'metric_period': 10  # 每10轮评估一次指标
         }
         
         # 如果GPU可用，启用GPU加速
         if self.use_gpu and hasattr(cb, 'CatBoostClassifier') and hasattr(cb.CatBoostClassifier, 'is_cuda_supported') and cb.CatBoostClassifier.is_cuda_supported():
-            params['task_type'] = 'GPU'
+            base_params['task_type'] = 'GPU'
             self.log("CatBoost使用GPU加速训练")
         
-        self.log(f"CatBoost参数: {params}")
+        # 定义超参数搜索空间
+        param_grid = [
+            {'iterations': 200, 'learning_rate': 0.03, 'depth': 6, 'l2_leaf_reg': 3, 'bootstrap_type': 'Bayesian', 'random_strength': 1},
+            {'iterations': 300, 'learning_rate': 0.01, 'depth': 8, 'l2_leaf_reg': 1, 'bootstrap_type': 'Bernoulli', 'subsample': 0.8},
+            {'iterations': 150, 'learning_rate': 0.1, 'depth': 4, 'l2_leaf_reg': 5, 'bootstrap_type': 'MVS'},
+            {'iterations': 250, 'learning_rate': 0.05, 'depth': 7, 'l2_leaf_reg': 2, 'bootstrap_type': 'Bernoulli', 'subsample': 0.85},
+            {'iterations': 200, 'learning_rate': 0.07, 'depth': 5, 'l2_leaf_reg': 4, 'bootstrap_type': 'Bayesian', 'random_strength': 0.5}
+        ]
         
         # 创建自定义回调，用于日志和暂停支持
-        # 使用正确的回调方式
         class LoggerCallback(object):
             def __init__(self, logger, progress_interval=10):
                 self.logger = logger
@@ -629,22 +1151,78 @@ class LotteryMLModels:
                     self.logger(f"CatBoost训练进度: {self.iteration}/{info.params.iterations} 迭代已完成 ({self.iteration/info.params.iterations*100:.1f}%)")
                 return False  # 返回False表示继续训练
         
-        # 创建模型
-        model = cb.CatBoostClassifier(**params)
-        
-        # 训练模型
-        self.log(f"开始训练CatBoost模型...")
-        
         try:
-            # 检查是否支持回调
-            if hasattr(cb, 'CallbackCustom') or hasattr(model, 'set_user_callback'):
-                # 新版CatBoost
-                callbacks = [LoggerCallback(self.log)]
-                model.fit(X_train, y_train, callbacks=callbacks)
+            # 执行超参数搜索
+            self.log("开始CatBoost超参数搜索...")
+            best_score = float('inf')
+            best_params = None
+            best_model = None
+            
+            # 准备训练和验证数据集
+            train_pool = cb.Pool(X_train_main, y_train_main)
+            val_pool = cb.Pool(X_val, y_val)
+            
+            for params in param_grid:
+                # 合并基础参数和当前参数集
+                current_params = {**base_params, **params}
+                self.log(f"测试参数: {params}")
+                
+                # 创建模型
+                model = cb.CatBoostClassifier(**current_params)
+                
+                # 训练模型
+                model.fit(
+                    train_pool,
+                    eval_set=val_pool,
+                    verbose=False,
+                    plot=False
+                )
+                
+                # 评估模型
+                val_predictions = model.predict(X_val)
+                val_accuracy = np.mean(val_predictions == y_val)
+                val_error = 1 - val_accuracy
+                
+                self.log(f"参数 {params} 的验证集准确率: {val_accuracy:.4f}, 错误率: {val_error:.4f}")
+                
+                # 更新最佳参数
+                if val_error < best_score:
+                    best_score = val_error
+                    best_params = current_params
+                    best_model = model
+            
+            # 使用最佳参数训练最终模型
+            if best_model is None:
+                self.log("超参数搜索未找到有效模型，使用默认参数")
+                best_params = {**base_params, **param_grid[0]}
+                
+            self.log(f"使用最佳参数训练最终模型: {best_params}")
+            
+            # 如果已经有最佳模型，直接使用
+            if best_model is not None:
+                model = best_model
+                self.log("使用超参数搜索中找到的最佳模型")
             else:
-                # 不使用回调，直接训练
-                model.fit(X_train, y_train)
-                self.log(f"CatBoost训练完成，共{params['iterations']}迭代")
+                # 创建新模型并训练
+                model = cb.CatBoostClassifier(**best_params)
+                
+                # 创建回调
+                callbacks = [LoggerCallback(self.log)]
+                
+                # 训练模型
+                self.log("训练最终CatBoost模型...")
+                model.fit(
+                    train_pool,
+                    eval_set=val_pool,
+                    callbacks=callbacks,
+                    verbose=False,
+                    plot=False
+                )
+            
+            # 在验证集上评估最终模型
+            val_predictions = model.predict(X_val)
+            val_accuracy = np.mean(val_predictions == y_val)
+            self.log(f"CatBoost验证集准确率: {val_accuracy:.4f}")
             
             # 特征重要性
             if hasattr(model, 'get_feature_importance'):
@@ -657,8 +1235,10 @@ class LotteryMLModels:
                 for i, (feature, importance) in enumerate(importance_data[:10]):
                     self.log(f"  {i+1}. {feature}: {importance:.4f}")
             
+            # 保存原始模型
             self.raw_models[f'catboost_{ball_type}'] = model
             
+            # 包装模型
             wrapped_model = WrappedCatBoostModel(model, self.process_multidim_prediction)
             
             self.log(f"{ball_type}球CatBoost模型训练完成")
@@ -671,61 +1251,212 @@ class LotteryMLModels:
             return None
     
     def train_ensemble(self, X_train, y_train, ball_type):
-        """训练集成模型（包含多种基础模型）"""
+        """训练集成模型（包含多种基础模型），使用加权投票机制"""
         self.log(f"训练{ball_type}球集成模型...")
         self.log(f"数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
         
+        # 划分验证集用于评估各个模型性能
+        from sklearn.model_selection import train_test_split
+        import numpy as np
+        
+        # 检查是否有类别样本数量过少的情况
+        from collections import Counter
+        class_counts = Counter(y_train)
+        min_samples = min(class_counts.values())
+        
+        # 根据样本数量决定是否使用分层抽样
+        use_stratified = min_samples >= 2
+        if use_stratified:
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+            )
+        else:
+            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用随机抽样代替分层抽样")
+            X_train_main, X_val, y_train_main, y_val = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=None
+            )
+        
         ensemble_models = {}
+        model_weights = {}
+        model_accuracies = {}
         total_models = 5 if LIGHTGBM_AVAILABLE and CATBOOST_AVAILABLE else 3
         current_model = 0
         
         self.log(f"集成模型将训练以下子模型: 随机森林, XGBoost, GBDT{', LightGBM' if LIGHTGBM_AVAILABLE else ''}{', CatBoost' if CATBOOST_AVAILABLE else ''}")
+        self.log("使用加权投票机制，根据验证集性能为每个模型分配权重")
         
-    
+        # 训练随机森林模型
         current_model += 1
         self.log(f"集成模型进度: 开始训练子模型 ({current_model}/{total_models}) - 随机森林")
-        rf_model = self.train_random_forest(X_train, y_train, ball_type)
+        rf_model = self.train_random_forest(X_train_main, y_train_main, ball_type)
         if rf_model:
             ensemble_models['random_forest'] = rf_model
+            # 评估模型在验证集上的性能
+            try:
+                y_pred = rf_model.predict(X_val)
+                if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                    y_pred = np.argmax(y_pred, axis=1)
+                accuracy = np.mean(y_pred == y_val)
+                model_accuracies['random_forest'] = accuracy
+                self.log(f"随机森林模型在验证集上的准确率: {accuracy:.4f}")
+            except Exception as e:
+                self.log(f"评估随机森林模型时出错: {str(e)}")
+                model_accuracies['random_forest'] = 0.5  # 默认权重
             self.log(f"集成模型进度: 随机森林模型添加完成 ({current_model}/{total_models})")
             
+        # 训练XGBoost模型
         current_model += 1
         self.log(f"集成模型进度: 开始训练子模型 ({current_model}/{total_models}) - XGBoost")
-        xgb_model = self.train_xgboost(X_train, y_train, ball_type)
+        xgb_model = self.train_xgboost(X_train_main, y_train_main, ball_type)
         if xgb_model:
             ensemble_models['xgboost'] = xgb_model
+            # 评估模型在验证集上的性能
+            try:
+                y_pred = xgb_model.predict(X_val)
+                if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                    y_pred = np.argmax(y_pred, axis=1)
+                accuracy = np.mean(y_pred == y_val)
+                model_accuracies['xgboost'] = accuracy
+                self.log(f"XGBoost模型在验证集上的准确率: {accuracy:.4f}")
+            except Exception as e:
+                self.log(f"评估XGBoost模型时出错: {str(e)}")
+                model_accuracies['xgboost'] = 0.5  # 默认权重
             self.log(f"集成模型进度: XGBoost模型添加完成 ({current_model}/{total_models})")
             
+        # 训练GBDT模型
         current_model += 1
         self.log(f"集成模型进度: 开始训练子模型 ({current_model}/{total_models}) - GBDT")
-        gbdt_model = self.train_gbdt(X_train, y_train, ball_type)
+        gbdt_model = self.train_gbdt(X_train_main, y_train_main, ball_type)
         if gbdt_model:
             ensemble_models['gbdt'] = gbdt_model
+            # 评估模型在验证集上的性能
+            try:
+                y_pred = gbdt_model.predict(X_val)
+                if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                    y_pred = np.argmax(y_pred, axis=1)
+                accuracy = np.mean(y_pred == y_val)
+                model_accuracies['gbdt'] = accuracy
+                self.log(f"GBDT模型在验证集上的准确率: {accuracy:.4f}")
+            except Exception as e:
+                self.log(f"评估GBDT模型时出错: {str(e)}")
+                model_accuracies['gbdt'] = 0.5  # 默认权重
             self.log(f"集成模型进度: GBDT模型添加完成 ({current_model}/{total_models})")
             
+        # 训练LightGBM模型
         if LIGHTGBM_AVAILABLE:
             current_model += 1
             self.log(f"集成模型进度: 开始训练子模型 ({current_model}/{total_models}) - LightGBM")
-            lgb_model = self.train_lightgbm(X_train, y_train, ball_type)
+            lgb_model = self.train_lightgbm(X_train_main, y_train_main, ball_type)
             if lgb_model:
                 ensemble_models['lightgbm'] = lgb_model
+                # 评估模型在验证集上的性能
+                try:
+                    y_pred = lgb_model.predict(X_val)
+                    if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                        y_pred = np.argmax(y_pred, axis=1)
+                    accuracy = np.mean(y_pred == y_val)
+                    model_accuracies['lightgbm'] = accuracy
+                    self.log(f"LightGBM模型在验证集上的准确率: {accuracy:.4f}")
+                except Exception as e:
+                    self.log(f"评估LightGBM模型时出错: {str(e)}")
+                    model_accuracies['lightgbm'] = 0.5  # 默认权重
                 self.log(f"集成模型进度: LightGBM模型添加完成 ({current_model}/{total_models})")
                 
+        # 训练CatBoost模型
         if CATBOOST_AVAILABLE:
             current_model += 1
             self.log(f"集成模型进度: 开始训练子模型 ({current_model}/{total_models}) - CatBoost")
-            cb_model = self.train_catboost(X_train, y_train, ball_type)
+            cb_model = self.train_catboost(X_train_main, y_train_main, ball_type)
             if cb_model:
                 ensemble_models['catboost'] = cb_model
+                # 评估模型在验证集上的性能
+                try:
+                    y_pred = cb_model.predict(X_val)
+                    if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                        y_pred = np.argmax(y_pred, axis=1)
+                    accuracy = np.mean(y_pred == y_val)
+                    model_accuracies['catboost'] = accuracy
+                    self.log(f"CatBoost模型在验证集上的准确率: {accuracy:.4f}")
+                except Exception as e:
+                    self.log(f"评估CatBoost模型时出错: {str(e)}")
+                    model_accuracies['catboost'] = 0.5  # 默认权重
                 self.log(f"集成模型进度: CatBoost模型添加完成 ({current_model}/{total_models})")
         
+        # 计算模型权重
+        if model_accuracies:
+            # 使用softmax函数将准确率转换为权重
+            accuracies = np.array(list(model_accuracies.values()))
+            # 添加温度参数使权重分布更加明显
+            temperature = 2.0
+            exp_accuracies = np.exp((accuracies - np.min(accuracies)) / temperature)
+            softmax_weights = exp_accuracies / np.sum(exp_accuracies)
+            
+            # 将权重分配给各个模型
+            for i, model_name in enumerate(model_accuracies.keys()):
+                model_weights[model_name] = softmax_weights[i]
+        else:
+            # 如果没有准确率信息，使用均等权重
+            for model_name in ensemble_models.keys():
+                model_weights[model_name] = 1.0 / len(ensemble_models)
+        
+        # 保存模型权重
+        self.model_weights[f'{ball_type}_weights'] = model_weights
+        
+        # 输出模型权重信息
         self.log(f"集成模型完成，包含 {len(ensemble_models)} 个子模型")
+        self.log("模型权重分配:")
+        for model_name, weight in model_weights.items():
+            self.log(f"- {model_name}: {weight:.4f} (准确率: {model_accuracies.get(model_name, 0):.4f})")
         
-        model_info = []
-        for model_name in ensemble_models.keys():
-            model_info.append(f"- {model_name}")
-        
-        self.log(f"集成模型包含以下子模型:\n" + "\n".join(model_info))
+        # 使用加权投票在验证集上评估集成模型性能
+        if X_val is not None and y_val is not None and ensemble_models:
+            self.log("在验证集上评估集成模型性能...")
+            try:
+                # 获取每个模型的预测结果
+                predictions = {}
+                for model_name, model in ensemble_models.items():
+                    y_pred = model.predict(X_val)
+                    if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+                        y_pred = np.argmax(y_pred, axis=1)
+                    predictions[model_name] = y_pred
+                
+                # 使用加权投票进行集成预测
+                if ball_type == 'red':
+                    num_classes = self.red_range + 1
+                else:  # blue
+                    num_classes = self.blue_range + 1
+                
+                # 初始化投票矩阵
+                vote_matrix = np.zeros((len(y_val), num_classes))
+                
+                # 对每个模型的预测进行加权投票
+                for model_name, preds in predictions.items():
+                    weight = model_weights[model_name]
+                    for i, pred in enumerate(preds):
+                        if pred < num_classes:  # 确保预测类别在有效范围内
+                            vote_matrix[i, pred] += weight
+                
+                # 获取得票最多的类别作为最终预测
+                ensemble_preds = np.argmax(vote_matrix, axis=1)
+                
+                # 计算集成模型准确率
+                ensemble_accuracy = np.mean(ensemble_preds == y_val)
+                self.log(f"集成模型在验证集上的准确率: {ensemble_accuracy:.4f}")
+                
+                # 与最佳单一模型比较
+                best_single_model = max(model_accuracies.items(), key=lambda x: x[1])
+                self.log(f"最佳单一模型 ({best_single_model[0]}) 准确率: {best_single_model[1]:.4f}")
+                
+                if ensemble_accuracy > best_single_model[1]:
+                    improvement = (ensemble_accuracy - best_single_model[1]) / best_single_model[1] * 100
+                    self.log(f"集成模型相比最佳单一模型提升: {improvement:.2f}%")
+                else:
+                    decrease = (best_single_model[1] - ensemble_accuracy) / best_single_model[1] * 100
+                    self.log(f"警告: 集成模型相比最佳单一模型下降: {decrease:.2f}%")
+            except Exception as e:
+                self.log(f"评估集成模型时出错: {str(e)}")
+                import traceback
+                self.log(traceback.format_exc())
         
         return ensemble_models
     
@@ -864,8 +1595,13 @@ class LotteryMLModels:
         if 'red' in self.models:
             # 处理不同类型的模型
             if self.model_type == 'ensemble':
-                # 集成模型需要单独处理，对每个子模型进行预测，然后进行投票
+                # 集成模型需要单独处理，对每个子模型进行预测，然后进行加权投票
                 red_votes = {}
+                red_weighted_votes = {}
+                
+                # 检查是否有模型权重
+                has_weights = hasattr(self, 'model_weights') and 'red' in self.model_weights
+                
                 for model_name, model in self.models['red'].items():
                     self.log(f"评估{model_name}模型...")
                     try:
@@ -875,21 +1611,34 @@ class LotteryMLModels:
                         if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
                             y_pred = np.argmax(y_pred, axis=1)
                         
-                        # 记录每个样本的投票
+                        # 获取当前模型的权重
+                        weight = 1.0  # 默认权重
+                        if has_weights and model_name in self.model_weights['red']:
+                            weight = self.model_weights['red'][model_name]
+                            self.log(f"{model_name}模型权重: {weight:.4f}")
+                        
+                        # 记录每个样本的加权投票
                         for i, pred in enumerate(y_pred):
                             if i not in red_votes:
                                 red_votes[i] = {}
+                                red_weighted_votes[i] = {}
                             if pred not in red_votes[i]:
                                 red_votes[i][pred] = 0
+                                red_weighted_votes[i][pred] = 0.0
                             red_votes[i][pred] += 1
+                            red_weighted_votes[i][pred] += weight
                     except Exception as e:
                         self.log(f"评估{model_name}模型时出错: {e}")
                 
-                # 根据投票确定最终预测结果
+                # 根据加权投票确定最终预测结果
                 y_pred_red = []
                 for i in range(len(X_test)):
-                    if i in red_votes and red_votes[i]:
-                        # 找出得票最多的类别
+                    if i in red_weighted_votes and red_weighted_votes[i]:
+                        # 使用加权投票结果
+                        pred_class = max(red_weighted_votes[i].items(), key=lambda x: x[1])[0]
+                        y_pred_red.append(pred_class)
+                    elif i in red_votes and red_votes[i]:
+                        # 如果没有权重信息，回退到普通投票
                         pred_class = max(red_votes[i].items(), key=lambda x: x[1])[0]
                         y_pred_red.append(pred_class)
                     else:
@@ -916,8 +1665,13 @@ class LotteryMLModels:
         if 'blue' in self.models:
             # 处理不同类型的模型
             if self.model_type == 'ensemble':
-                # 集成模型需要单独处理，对每个子模型进行预测，然后进行投票
+                # 集成模型需要单独处理，对每个子模型进行预测，然后进行加权投票
                 blue_votes = {}
+                blue_weighted_votes = {}
+                
+                # 检查是否有模型权重
+                has_weights = hasattr(self, 'model_weights') and 'blue' in self.model_weights
+                
                 for model_name, model in self.models['blue'].items():
                     self.log(f"评估{model_name}模型...")
                     try:
@@ -927,21 +1681,34 @@ class LotteryMLModels:
                         if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
                             y_pred = np.argmax(y_pred, axis=1)
                         
-                        # 记录每个样本的投票
+                        # 获取当前模型的权重
+                        weight = 1.0  # 默认权重
+                        if has_weights and model_name in self.model_weights['blue']:
+                            weight = self.model_weights['blue'][model_name]
+                            self.log(f"{model_name}模型权重: {weight:.4f}")
+                        
+                        # 记录每个样本的加权投票
                         for i, pred in enumerate(y_pred):
                             if i not in blue_votes:
                                 blue_votes[i] = {}
+                                blue_weighted_votes[i] = {}
                             if pred not in blue_votes[i]:
                                 blue_votes[i][pred] = 0
+                                blue_weighted_votes[i][pred] = 0.0
                             blue_votes[i][pred] += 1
+                            blue_weighted_votes[i][pred] += weight
                     except Exception as e:
                         self.log(f"评估{model_name}模型时出错: {e}")
                 
-                # 根据投票确定最终预测结果
+                # 根据加权投票确定最终预测结果
                 y_pred_blue = []
                 for i in range(len(X_test)):
-                    if i in blue_votes and blue_votes[i]:
-                        # 找出得票最多的类别
+                    if i in blue_weighted_votes and blue_weighted_votes[i]:
+                        # 使用加权投票结果
+                        pred_class = max(blue_weighted_votes[i].items(), key=lambda x: x[1])[0]
+                        y_pred_blue.append(pred_class)
+                    elif i in blue_votes and blue_votes[i]:
+                        # 如果没有权重信息，回退到普通投票
                         pred_class = max(blue_votes[i].items(), key=lambda x: x[1])[0]
                         y_pred_blue.append(pred_class)
                     else:
@@ -974,8 +1741,8 @@ class LotteryMLModels:
         return red_accuracy, blue_accuracy
     
     def save_models(self):
-        """保存模型和缩放器"""
-        self.log("\n----- 保存模型和缩放器 -----")
+        """保存模型、缩放器和模型权重"""
+        self.log("\n----- 保存模型、缩放器和模型权重 -----")
         
         # 对于期望值模型，创建信息文件以确保目录存在
         if self.model_type == 'expected_value' and EXPECTED_VALUE_MODEL_AVAILABLE:
@@ -1016,6 +1783,13 @@ class LotteryMLModels:
                     with open(sub_model_path, 'wb') as f:
                         pickle.dump(sub_model, f)
                     self.log(f"保存{ball_type}球{model_name}模型: {sub_model_path}")
+                
+                # 保存模型权重（如果存在）
+                if hasattr(self, 'model_weights') and ball_type in self.model_weights:
+                    weights_path = os.path.join(model_dir, f'{ball_type}_model_weights.json')
+                    with open(weights_path, 'w') as f:
+                        json.dump(self.model_weights[ball_type], f, indent=4)
+                    self.log(f"保存{ball_type}球模型权重: {weights_path}")
             elif hasattr(model, 'predict'):
                 # 对于sklearn或类似模型使用pickle保存
                 model_path = os.path.join(model_dir, f'{ball_type}_model.pkl')
@@ -1196,11 +1970,31 @@ class LotteryMLModels:
                     # 对于集成模型，加载每个子模型
                     self.models[ball_type] = {}
                     ensemble_loaded = False
-                    for model_name in ['random_forest', 'gbdt', 'xgboost', 'lightgbm']:
+                    for model_name in ['random_forest', 'gbdt', 'xgboost', 'lightgbm', 'catboost']:
                         model_path = os.path.join(model_dir, f'{ball_type}_{model_name}_model.pkl')
                         if os.path.exists(model_path):
-                            with open(model_path, 'rb') as f:
-                                self.models[ball_type][model_name] = pickle.load(f)
+                            try:
+                                with open(model_path, 'rb') as f:
+                                    self.models[ball_type][model_name] = pickle.load(f)
+                            except (AttributeError, ImportError) as e:
+                                if "MT19937" in str(e) or "BitGenerator" in str(e):
+                                    self.log(f"检测到numpy.random序列化问题，尝试修复...")
+                                    # 修复numpy.random序列化问题
+                                    # 确保pickle已经被正确导入
+                                    import numpy as np
+                                    
+                                    # 自定义unpickler来处理MT19937
+                                    class CustomUnpickler(pickle.Unpickler):
+                                        def find_class(self, module, name):
+                                            if module == 'numpy.random._mt19937' and name == 'MT19937':
+                                                return np.random.MT19937
+                                            return super().find_class(module, name)
+                                    
+                                    with open(model_path, 'rb') as f:
+                                        self.models[ball_type][model_name] = CustomUnpickler(f).load()
+                                    self.log(f"numpy.random序列化问题修复成功")
+                                else:
+                                    raise
                             self.log(f"加载{ball_type}球{model_name}模型成功")
                             
                             # 尝试从模型中获取特征数量
@@ -1213,6 +2007,42 @@ class LotteryMLModels:
                             ensemble_loaded = True
                         else:
                             self.log(f"警告: {ball_type}球{model_name}模型文件不存在")
+                    
+                    # 加载模型权重（如果存在）
+                    weights_path = os.path.join(model_dir, f'{ball_type}_model_weights.json')
+                    if os.path.exists(weights_path):
+                        try:
+                            with open(weights_path, 'r') as f:
+                                if not hasattr(self, 'model_weights'):
+                                    self.model_weights = {}
+                                if ball_type not in self.model_weights:
+                                    self.model_weights[ball_type] = {}
+                                self.model_weights[ball_type] = json.load(f)
+                            self.log(f"加载{ball_type}球模型权重成功")
+                            # 打印权重信息
+                            for model_name, weight in self.model_weights[ball_type].items():
+                                self.log(f"{model_name}模型权重: {weight:.4f}")
+                        except Exception as e:
+                            self.log(f"加载{ball_type}球模型权重失败: {e}")
+                            # 创建默认权重
+                            if not hasattr(self, 'model_weights'):
+                                self.model_weights = {}
+                            if ball_type not in self.model_weights:
+                                self.model_weights[ball_type] = {}
+                            # 为所有加载的模型设置相等的权重
+                            for model_name in self.models[ball_type].keys():
+                                self.model_weights[ball_type][model_name] = 1.0 / len(self.models[ball_type])
+                            self.log(f"创建了默认{ball_type}球模型权重")
+                    else:
+                        self.log(f"警告: {ball_type}球模型权重文件不存在，使用均等权重")
+                        # 创建默认权重
+                        if not hasattr(self, 'model_weights'):
+                            self.model_weights = {}
+                        if ball_type not in self.model_weights:
+                            self.model_weights[ball_type] = {}
+                        # 为所有加载的模型设置相等的权重
+                        for model_name in self.models[ball_type].keys():
+                            self.model_weights[ball_type][model_name] = 1.0 / len(self.models[ball_type])
                     if ensemble_loaded:
                         balls_loaded += 1
                     else:
@@ -1222,8 +2052,30 @@ class LotteryMLModels:
                     model_path = os.path.join(model_dir, f'{ball_type}_model.pkl')
                     if os.path.exists(model_path):
                         try:
-                            with open(model_path, 'rb') as f:
-                                model_obj = pickle.load(f)
+                            # 添加处理numpy.random._mt19937.MT19937序列化问题的代码
+                            try:
+                                with open(model_path, 'rb') as f:
+                                    model_obj = pickle.load(f)
+                            except (AttributeError, ImportError) as e:
+                                if "MT19937" in str(e) or "BitGenerator" in str(e):
+                                    self.log(f"检测到numpy.random序列化问题，尝试修复...")
+                                    # 修复numpy.random序列化问题
+                                    # 确保pickle已经被正确导入
+                                    import io
+                                    import numpy as np
+                                    
+                                    # 自定义unpickler来处理MT19937
+                                    class CustomUnpickler(pickle.Unpickler):
+                                        def find_class(self, module, name):
+                                            if module == 'numpy.random._mt19937' and name == 'MT19937':
+                                                return np.random.MT19937
+                                            return super().find_class(module, name)
+                                    
+                                    with open(model_path, 'rb') as f:
+                                        model_obj = CustomUnpickler(f).load()
+                                    self.log(f"numpy.random序列化问题修复成功")
+                                else:
+                                    raise
                                 
                             # 特别处理 LightGBM 和其他可能返回原始对象而不是包装后对象的模型
                             if self.model_type == 'lightgbm' and hasattr(model_obj, 'predict'):
@@ -1253,8 +2105,28 @@ class LotteryMLModels:
                             self.log(f"加载{ball_type}球模型失败: {e}, 尝试创建包装器")
                             # 尝试创建适当的包装器
                             try:
-                                with open(model_path, 'rb') as f:
-                                    raw_model = pickle.load(f)
+                                try:
+                                    with open(model_path, 'rb') as f:
+                                        raw_model = pickle.load(f)
+                                except (AttributeError, ImportError) as e:
+                                    if "MT19937" in str(e) or "BitGenerator" in str(e):
+                                        self.log(f"检测到numpy.random序列化问题，尝试修复...")
+                                        # 修复numpy.random序列化问题
+                                        # 确保pickle已经被正确导入
+                                        import numpy as np
+                                        
+                                        # 自定义unpickler来处理MT19937
+                                        class CustomUnpickler(pickle.Unpickler):
+                                            def find_class(self, module, name):
+                                                if module == 'numpy.random._mt19937' and name == 'MT19937':
+                                                    return np.random.MT19937
+                                                return super().find_class(module, name)
+                                        
+                                        with open(model_path, 'rb') as f:
+                                            raw_model = CustomUnpickler(f).load()
+                                        self.log(f"numpy.random序列化问题修复成功")
+                                    else:
+                                        raise
                                 
                                 if self.model_type == 'lightgbm':
                                     self.models[ball_type] = WrappedLightGBMModel(raw_model, self.process_multidim_prediction)

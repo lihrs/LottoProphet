@@ -168,6 +168,7 @@ class TrainModelThread(QThread):
                
                 if self.should_terminate:
                     raise Exception("训练被用户终止")
+                return
             
            
             ml_model = LotteryMLModels(

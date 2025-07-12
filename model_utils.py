@@ -28,19 +28,68 @@ name_path = {
     }
 }
 
-def load_pytorch_model(model_path, input_dim, hidden_dim, output_dim, output_seq_length, lottery_type):
+def load_pytorch_model(model_path, input_dim, hidden_dim, output_dim, output_seq_length, lottery_type, 
+                     bidirectional=False, attention=False, residual=False, num_layers=1, dropout=0.3):
     """
     加载 PyTorch 模型及缩放器
+    
+    Args:
+        model_path: 模型文件路径
+        input_dim: 输入特征维度
+        hidden_dim: LSTM隐藏层维度
+        output_dim: 输出维度字典 {'red': int, 'blue': int}
+        output_seq_length: 输出序列长度字典 {'red': int, 'blue': int}
+        lottery_type: 彩票类型
+        bidirectional: 是否使用双向LSTM
+        attention: 是否使用注意力机制
+        residual: 是否使用残差连接
+        num_layers: LSTM层数
+        dropout: Dropout比例
+    
+    Returns:
+        red_model: 红球预测模型
+        blue_model: 蓝球预测模型
+        scaler_X: 特征缩放器
     """
     checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    
+    # 检查checkpoint中是否包含模型配置信息
+    model_config = checkpoint.get('model_config', {})
+    
+    # 如果checkpoint中有配置信息，则使用它们覆盖默认值
+    bidirectional = model_config.get('bidirectional', bidirectional)
+    attention = model_config.get('attention', attention)
+    residual = model_config.get('residual', residual)
+    num_layers = model_config.get('num_layers', num_layers)
+    dropout = model_config.get('dropout', dropout)
 
     # 加载红球模型
-    red_model = LstmCRFModel(input_dim, hidden_dim, output_dim['red'], output_seq_length['red'], num_layers=1, dropout=0.3)
+    red_model = LstmCRFModel(
+        input_dim, 
+        hidden_dim, 
+        output_dim['red'], 
+        output_seq_length['red'], 
+        num_layers=num_layers, 
+        dropout=dropout,
+        bidirectional=bidirectional,
+        attention=attention,
+        residual=residual
+    )
     red_model.load_state_dict(checkpoint['red_model'])
     red_model.eval()
 
     # 加载蓝球模型
-    blue_model = LstmCRFModel(input_dim, hidden_dim, output_dim['blue'], output_seq_length['blue'], num_layers=1, dropout=0.3)
+    blue_model = LstmCRFModel(
+        input_dim, 
+        hidden_dim, 
+        output_dim['blue'], 
+        output_seq_length['blue'], 
+        num_layers=num_layers, 
+        dropout=dropout,
+        bidirectional=bidirectional,
+        attention=attention,
+        residual=residual
+    )
     blue_model.load_state_dict(checkpoint['blue_model'])
     blue_model.eval()
 
@@ -234,4 +283,4 @@ def randomize_numbers(numbers, lottery_type):
         return sorted(red_numbers) + [blue_number]
     
     else:
-        return numbers  # 未知类型，返回原始号码 
+        return numbers  # 未知类型，返回原始号码
