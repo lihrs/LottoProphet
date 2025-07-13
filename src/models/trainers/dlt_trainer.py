@@ -21,7 +21,7 @@ import joblib
 
 # 确保当前目录在sys.path中
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(os.path.dirname(script_dir))
+project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 
@@ -260,42 +260,14 @@ def main():
         device = torch.device("cpu")
         logger.info("使用CPU训练")
     
-    # 数据路径
+    # 数据路径 - 固定使用根目录下的data目录
     data_path = os.path.join(project_dir, 'data', 'dlt', 'dlt_history.csv')
     
-    # 如果数据文件不存在，尝试使用备用路径
+    # 检查数据文件是否存在
     if not os.path.exists(data_path):
-        logger.warning(f"找不到数据文件: {data_path}")
-        # 尝试从fetchers目录获取数据
-        fetcher_data_path = os.path.join(project_dir, 'src', 'data', 'fetchers', 'dlt_history.csv')
-        if os.path.exists(fetcher_data_path):
-            data_path = fetcher_data_path
-            logger.info(f"使用备用数据路径: {data_path}")
-        else:
-            # 检查项目根目录是否正确
-            logger.info(f"当前项目目录: {project_dir}")
-            logger.info(f"查找的数据路径: {data_path}")
-            
-            # 列出可能的数据文件位置
-            possible_paths = [
-                os.path.join(project_dir, 'data', 'dlt', 'dlt_history.csv'),
-                os.path.join(os.path.dirname(project_dir), 'data', 'dlt', 'dlt_history.csv'),
-                os.path.join(os.getcwd(), 'data', 'dlt', 'dlt_history.csv')
-            ]
-            
-            found_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    found_path = path
-                    break
-                    
-            if found_path:
-                data_path = found_path
-                logger.info(f"找到数据文件: {data_path}")
-            else:
-                logger.error(f"找不到数据文件，请先运行数据获取脚本")
-                logger.error(f"已检查的路径: {possible_paths}")
-                sys.exit(1)
+        logger.error(f"找不到数据文件: {data_path}")
+        logger.error("请先运行数据获取脚本")
+        sys.exit(1)
     
     # 加载和预处理数据
     df = load_data(data_path)
@@ -330,7 +302,7 @@ def main():
     )
 
     # 保存模型
-    model_dir = os.path.join(project_dir, 'model', 'dlt')
+    model_dir = os.path.join(project_dir, '..', 'models', 'dlt')
     
     # 创建组合模型字典
     combined_model = {
