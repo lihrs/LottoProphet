@@ -1,4 +1,4 @@
-# -*- coding:utf-8 -*-
+#!/usr/bin/env python
 """
 Data Analysis Module for Lottery Data
 Author: Yang Zhao
@@ -58,9 +58,9 @@ def memoize(expire_seconds=300):
 def load_lottery_data(lottery_type):
     """加载彩票历史数据"""
     if lottery_type == 'dlt':
-        file_path = './scripts/dlt/dlt_history.csv'
+        file_path = './data/dlt/dlt_history.csv'
     else:  # ssq
-        file_path = './scripts/ssq/ssq_history.csv'
+        file_path = './data/ssq/ssq_history.csv'
     
     if not os.path.exists(file_path):
         logging.error(f"找不到数据文件: {file_path}")
@@ -723,4 +723,4 @@ def plot_trend_analysis(data, width=12, height=6, dpi=100):
     pixmap = QPixmap()
     pixmap.loadFromData(buf.getvalue())
     
-    return pixmap 
+    return pixmap

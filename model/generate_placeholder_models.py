@@ -17,7 +17,7 @@ project_dir = os.path.dirname(script_dir)
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 
-from model import LstmCRFModel
+from src.core.model import LstmCRFModel
 
 def generate_placeholder_model(model_dir, model_type):
     """
@@ -104,4 +104,4 @@ def main():
     print("占位符模型文件生成完成！")
 
 if __name__ == "__main__":
-    main() 
+    main()

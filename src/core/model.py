@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -100,13 +101,19 @@ class LstmCRFModel(nn.Module):
         """获取发射概率矩阵，用于采样和概率分析"""
         with torch.no_grad():
             lstm_out, _ = self.lstm(x)
+            lstm_out = self.dropout(lstm_out)
+            
+            if self.residual and x.size(2) == lstm_out.size(2):
+                lstm_out = lstm_out + x
             
             if self.attention:
                 features = self._apply_attention(lstm_out)
             else:
                 features = lstm_out[:, -1, :]
-                
-            logits = self.fc(features)
-            emissions = logits.view(-1, self.output_seq_length, self.output_dim)
             
+            logits = self.fc(features)
+            logits = logits.view(-1, self.output_seq_length, self.output_dim)
+            
+            # 应用softmax获取概率分布
+            emissions = F.softmax(logits, dim=-1)
             return emissions

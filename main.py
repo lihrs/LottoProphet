@@ -55,7 +55,7 @@ def train_model(lottery_type, model_type):
     logger.info(f"开始训练{lottery_type}彩票的{model_type}模型...")
     
    
-    from lottery_predictor_app_new import train_model as app_train_model
+    from src.ui.main_app import train_model as app_train_model
     
    
     def log_to_console(message):
@@ -75,7 +75,7 @@ def predict(lottery_type, model_type):
     """使用训练好的模型进行预测"""
     logger.info(f"使用{model_type}模型预测{lottery_type}彩票...")
     
-    from lottery_predictor_app_new import predict_next_draw as app_predict
+    from src.ui.main_app import predict_next_draw as app_predict
     results = app_predict(lottery_type, model_type)
     
     if results:
@@ -89,7 +89,7 @@ def run_app():
     """运行完整的GUI应用程序"""
     logger.info("启动彩票预测应用程序...")
     
-    from lottery_predictor_app_new import main as app_main
+    from src.ui.main_app import main as app_main
     app_main()
 
 def main():
@@ -154,4 +154,4 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as e:
         logger.exception(f"程序运行出错: {e}")
-        sys.exit(1) 
+        sys.exit(1)
