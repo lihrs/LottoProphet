@@ -34,15 +34,12 @@ def create_main_tab(main_tab):
     gpu_available = False
     cuda_device = "不可用"
     try:
-        import torch
-        cuda_available = torch.cuda.is_available()
-        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-        gpu_available = cuda_available or mps_available
-        
-        if cuda_available:
-            cuda_device = f"CUDA可用 ({torch.cuda.get_device_name(0)})"
-        elif mps_available:
-            cuda_device = "Apple M系列芯片GPU (MPS)可用"
+        from ..utils.device_utils import check_device_availability
+        device_info = check_device_availability()
+        cuda_available = device_info['cuda_available']
+        mps_available = device_info['mps_available']
+        gpu_available = device_info['gpu_available']
+        cuda_device = device_info['device_info']
     except:
         pass
     

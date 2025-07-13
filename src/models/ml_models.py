@@ -141,7 +141,12 @@ class LotteryMLModels:
             if cuda_available:
                 self.log(f"ML模型使用CUDA GPU: {torch.cuda.get_device_name(0)}")
             elif mps_available:
-                self.log("ML模型使用Apple M系列芯片GPU (MPS)")
+                import platform
+                if platform.system() == 'Darwin' and platform.processor() == 'arm':
+                    self.log("检测到Mac M1/M2处理器，ML模型将使用CPU以获得更好的性能")
+                    self.log("注意：MPS在某些ML任务中可能比CPU慢")
+                else:
+                    self.log("ML模型使用Apple M系列芯片GPU (MPS)")
             else:
                 self.log("GPU不可用，ML模型使用CPU")
                 self.use_gpu = False

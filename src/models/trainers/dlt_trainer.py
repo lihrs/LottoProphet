@@ -159,21 +159,10 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
     # 初始化模型
     model = LSTMCRF(input_dim, hidden_dim, output_dim, output_seq_length)
     
-    # 使用GPU（如果可用且要求使用）
-    device = None
-    if use_gpu:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            logger.info(f"使用CUDA GPU训练: {torch.cuda.get_device_name(0)}")
-        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
-            device = torch.device("mps")
-            logger.info("使用Apple M系列芯片GPU (MPS)训练")
-        else:
-            device = torch.device("cpu")
-            logger.info("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练")
-    else:
-        device = torch.device("cpu")
-        logger.info("使用CPU训练")
+    # 使用最优设备
+    from ...utils.device_utils import get_optimal_device
+    device, device_info = get_optimal_device(use_gpu=use_gpu)
+    logger.info(device_info)
         
     model.to(device)
     

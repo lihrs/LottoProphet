@@ -71,14 +71,11 @@ class LotteryPredictorApp(QMainWindow):
         self.has_mps = False
         self.cuda_info = "不可用"
         try:
-            import torch
-            self.has_cuda = torch.cuda.is_available()
-            self.has_mps = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-            
-            if self.has_cuda:
-                self.cuda_info = f"CUDA可用 ({torch.cuda.get_device_name(0)})"
-            elif self.has_mps:
-                self.cuda_info = "Apple M系列芯片GPU (MPS)可用"
+            from ..utils.device_utils import check_device_availability
+            device_info = check_device_availability()
+            self.has_cuda = device_info['cuda_available']
+            self.has_mps = device_info['mps_available']
+            self.cuda_info = device_info['device_info']
         except:
             pass
         
