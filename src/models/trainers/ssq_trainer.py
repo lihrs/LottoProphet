@@ -297,7 +297,7 @@ def main():
     )
 
     # 保存模型
-    model_dir = os.path.join(project_dir, '..', 'models', 'dlt')
+    model_dir = os.path.join(project_dir, 'models', 'dlt')
     
     # 创建组合模型字典
     combined_model = {

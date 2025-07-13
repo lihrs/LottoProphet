@@ -2,7 +2,7 @@
 /node_modules
 /.vscode
 
-myenv
+venv
 __pycache__
 catboost_info_blue
 catboost_info_red
