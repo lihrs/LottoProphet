@@ -34,7 +34,7 @@ def create_main_tab(main_tab):
     gpu_available = False
     cuda_device = "不可用"
     try:
-        from ..utils.device_utils import check_device_availability
+        from utils.device_utils import check_device_availability
         device_info = check_device_availability()
         cuda_available = device_info['cuda_available']
         mps_available = device_info['mps_available']
@@ -367,11 +367,15 @@ def create_expected_value_tab(expected_value_tab):
     train_layout = QVBoxLayout(train_group)
     
     gpu_checkbox = QCheckBox("使用GPU训练")
-    cuda_available = torch.cuda.is_available()
-    mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-    gpu_available = cuda_available or mps_available
-    gpu_checkbox.setChecked(gpu_available)
-    gpu_checkbox.setEnabled(gpu_available)
+    try:
+        device_info = check_device_availability()
+        gpu_available = device_info['gpu_available']
+        gpu_checkbox.setChecked(gpu_available)
+        gpu_checkbox.setEnabled(gpu_available)
+    except Exception as e:
+        print(f"获取设备信息时出错: {e}")
+        gpu_checkbox.setChecked(False)
+        gpu_checkbox.setEnabled(False)
     train_layout.addWidget(gpu_checkbox)
     
     # 添加控制按钮

@@ -25,6 +25,8 @@ project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 
+from src.utils.device_utils import check_device_availability
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +41,12 @@ logger = logging.getLogger('ssq_train')
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
-if torch.cuda.is_available():
+device_info = check_device_availability()
+if device_info['cuda_available']:
     torch.cuda.manual_seed_all(RANDOM_SEED)
 # 支持M1处理器
-MPS_AVAILABLE = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-GPU_AVAILABLE = torch.cuda.is_available() or MPS_AVAILABLE
-if MPS_AVAILABLE:
+GPU_AVAILABLE = device_info['gpu_available']
+if device_info['mps_available']:
     logger.info("MPS (Metal Performance Shaders) 后端可用，支持M1/M2处理器加速")
 
 # 模型定义
@@ -163,7 +165,7 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
     model = LSTMCRF(input_dim, hidden_dim, output_dim, output_seq_length)
     
     # 使用最优设备
-    from ...utils.device_utils import get_optimal_device
+    from src.utils.device_utils import get_optimal_device
     device, device_info = get_optimal_device(use_gpu=use_gpu)
     logger.info(device_info)
         
@@ -236,10 +238,11 @@ def main():
     
     # 检查GPU是否可用
     if args.gpu:
-        if torch.cuda.is_available():
+        device_info = check_device_availability()
+        if device_info['cuda_available']:
             logger.info(f"CUDA GPU可用: {torch.cuda.get_device_name(0)}")
             logger.info(f"CUDA版本: {torch.version.cuda}")
-        elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+        elif device_info['mps_available']:
             logger.info("Apple M系列芯片GPU加速可用 (MPS)")
         else:
             logger.warning("GPU不可用，将使用CPU训练")

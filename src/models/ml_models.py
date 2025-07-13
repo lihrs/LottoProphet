@@ -1,12 +1,12 @@
 # -*- coding:utf-8 -*-
-"""
-Machine Learning Models for Lottery Prediction
+"""Machine Learning Models for Lottery Prediction
 Author: Yang Zhao
 
 多种机器学习模型支持模块
 包含XGBoost、随机森林等多种预测模型以及集成学习功能
 """
 import os
+import sys
 import time
 import torch
 import numpy as np
@@ -20,6 +20,14 @@ from sklearn.metrics import mean_squared_error
 import xgboost as xgb
 import logging
 import json
+
+# 添加项目根目录到Python路径
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_dir = os.path.dirname(os.path.dirname(script_dir))
+if project_dir not in sys.path:
+    sys.path.append(project_dir)
+
+from src.utils.device_utils import check_device_availability
 
 # 尝试导入可选的模型库
 try:
@@ -135,12 +143,11 @@ class LotteryMLModels:
         
      
         if self.use_gpu:
-            cuda_available = torch.cuda.is_available()
-            mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+            device_info = check_device_availability()
             
-            if cuda_available:
+            if device_info['cuda_available']:
                 self.log(f"ML模型使用CUDA GPU: {torch.cuda.get_device_name(0)}")
-            elif mps_available:
+            elif device_info['mps_available']:
                 import platform
                 if platform.system() == 'Darwin' and platform.processor() == 'arm':
                     self.log("检测到Mac M1/M2处理器，ML模型将使用CPU以获得更好的性能")
@@ -451,13 +458,12 @@ class LotteryMLModels:
         }
         
         # 如果使用GPU并且GPU可用，则添加GPU参数
-        cuda_available = torch.cuda.is_available()
-        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        device_info = check_device_availability()
         
-        if self.use_gpu and cuda_available:
+        if self.use_gpu and device_info['cuda_available']:
             base_params['tree_method'] = 'gpu_hist'  # 使用CUDA GPU加速
             self.log("XGBoost使用CUDA GPU加速训练")
-        elif self.use_gpu and mps_available:
+        elif self.use_gpu and device_info['mps_available']:
             self.log("警告：XGBoost可能不支持MPS后端，将使用CPU训练")
         else:
             base_params['tree_method'] = 'hist'  # 使用快速直方图算法
@@ -932,13 +938,12 @@ class LotteryMLModels:
         }
         
         # 检查GPU可用性
-        cuda_available = torch.cuda.is_available()
-        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+        device_info = check_device_availability()
         
-        if self.use_gpu and cuda_available:
+        if self.use_gpu and device_info['cuda_available']:
             base_params['device'] = 'gpu'  # 使用CUDA GPU加速
             self.log("LightGBM使用CUDA GPU加速训练")
-        elif self.use_gpu and mps_available:
+        elif self.use_gpu and device_info['mps_available']:
             self.log("警告：LightGBM可能不支持MPS后端，将使用CPU训练")
         
         # 创建数据集

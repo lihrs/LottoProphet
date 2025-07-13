@@ -10,9 +10,11 @@ import logging
 import subprocess
 import torch
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
-from models.ml_models import LotteryMLModels, MODEL_TYPES
 
 from .model_utils import name_path
+from .device_utils import check_device_availability
+
+# 不要在模块级别导入，避免循环导入问题
 
 class LogEmitter(QObject):
     """日志发射器，用于在线程中发送日志信息"""
@@ -63,9 +65,8 @@ class TrainModelThread(QThread):
                 script_path = "./src/models/trainers/ssq_trainer.py"
         
         # GPU可用性检查
-        cuda_available = torch.cuda.is_available()
-        mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-        gpu_available = cuda_available or mps_available
+        device_info = check_device_availability()
+        gpu_available = device_info['gpu_available']
         
         if self.use_gpu and not gpu_available:
             self.log_signal.emit("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练。")
@@ -123,11 +124,14 @@ class TrainModelThread(QThread):
         """训练机器学习模型"""
         try:
             from data.analysis import load_lottery_data
+            # 延迟导入 LotteryMLModels 和 MODEL_TYPES，避免循环导入
+            from models.ml_models import LotteryMLModels, MODEL_TYPES
             
             # GPU可用性检查
-            cuda_available = torch.cuda.is_available()
-            mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-            gpu_available = cuda_available or mps_available
+            device_info = check_device_availability()
+            gpu_available = device_info['gpu_available']
+            cuda_available = device_info['cuda_available']
+            mps_available = device_info['mps_available']
             
             if self.use_gpu and not gpu_available:
                 self.log_signal.emit("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练。")

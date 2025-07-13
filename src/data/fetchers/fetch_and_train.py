@@ -9,6 +9,14 @@ import argparse
 import subprocess
 import logging
 import time
+from datetime import datetime
+
+# 添加项目根目录到Python路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+from src.data.fetchers.dlt_fetcher import DLTFetcher
+from src.data.fetchers.ssq_fetcher import SSQFetcher
+from src.utils.device_utils import check_device_availability
 
 # 配置日志
 logging.basicConfig(
@@ -61,10 +69,11 @@ def train_model(lottery_type, use_gpu, epochs):
     if use_gpu:
         try:
             import torch
-            if torch.cuda.is_available():
+            device_info = check_device_availability()
+            if device_info['cuda_available']:
                 gpu_device = torch.cuda.get_device_name(0)
                 logger.info(f"检测到可用CUDA GPU: {gpu_device}")
-            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            elif device_info['mps_available']:
                 logger.info("检测到可用Apple M系列芯片GPU (MPS)")
             else:
                 logger.warning("未检测到可用的GPU (CUDA或MPS)，将使用CPU训练")
