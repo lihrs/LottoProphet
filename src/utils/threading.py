@@ -10,7 +10,7 @@ import logging
 import subprocess
 import torch
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
-from ..models.ml_models import LotteryMLModels, MODEL_TYPES
+from models.ml_models import LotteryMLModels, MODEL_TYPES
 
 from .model_utils import name_path
 
@@ -52,15 +52,15 @@ class TrainModelThread(QThread):
         if getattr(sys, 'frozen', False):
             # 在打包环境中运行
             if self.lottery_type == 'dlt':
-                script_path = os.path.join(os.path.dirname(sys.executable), "scripts", "dlt", "train_dlt_model.py")
+                script_path = os.path.join(os.path.dirname(sys.executable), "src", "models", "trainers", "dlt_trainer.py")
             else:
-                script_path = os.path.join(os.path.dirname(sys.executable), "scripts", "ssq", "train_ssq_model.py")
+                script_path = os.path.join(os.path.dirname(sys.executable), "src", "models", "trainers", "ssq_trainer.py")
         else:
             # 在开发环境中运行
             if self.lottery_type == 'dlt':
-                script_path = "./scripts/dlt/train_dlt_model.py"
+                script_path = "./src/models/trainers/dlt_trainer.py"
             else:
-                script_path = "./scripts/ssq/train_ssq_model.py"
+                script_path = "./src/models/trainers/ssq_trainer.py"
         
         # GPU可用性检查
         cuda_available = torch.cuda.is_available()
@@ -122,7 +122,7 @@ class TrainModelThread(QThread):
     def _train_ml_model(self):
         """训练机器学习模型"""
         try:
-            from scripts.data_analysis import load_lottery_data
+            from data.analysis import load_lottery_data
             
             # GPU可用性检查
             cuda_available = torch.cuda.is_available()
@@ -235,15 +235,15 @@ class UpdateDataThread(QThread):
         if getattr(sys, 'frozen', False):
             # 在打包环境中运行
             if self.lottery_type == 'dlt':
-                script_path = os.path.join(os.path.dirname(sys.executable), "scripts", "dlt", "fetch_dlt_data.py")
+                script_path = os.path.join(os.path.dirname(sys.executable), "src", "data", "fetchers", "dlt_fetcher.py")
             else:
-                script_path = os.path.join(os.path.dirname(sys.executable), "scripts", "ssq", "fetch_ssq_data.py")
+                script_path = os.path.join(os.path.dirname(sys.executable), "src", "data", "fetchers", "ssq_fetcher.py")
         else:
             # 在开发环境中运行
             if self.lottery_type == 'dlt':
-                script_path = "./scripts/dlt/fetch_dlt_data.py"
+                script_path = "./src/data/fetchers/dlt_fetcher.py"
             else:
-                script_path = "./scripts/ssq/fetch_ssq_data.py"
+                script_path = "./src/data/fetchers/ssq_fetcher.py"
         
         self.log_signal.emit(f"启动数据更新脚本: {script_path}")
         

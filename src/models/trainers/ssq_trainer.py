@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-大乐透LSTM-CRF模型训练脚本
+双色球LSTM-CRF模型训练脚本
 """
 import os
 import sys
@@ -33,7 +33,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger('dlt_train')
+logger = logging.getLogger('ssq_train')
 
 # 全局参数
 RANDOM_SEED = 42
@@ -41,8 +41,11 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(RANDOM_SEED)
+# 支持M1处理器
 MPS_AVAILABLE = hasattr(torch, 'mps') and torch.backends.mps.is_available()
 GPU_AVAILABLE = torch.cuda.is_available() or MPS_AVAILABLE
+if MPS_AVAILABLE:
+    logger.info("MPS (Metal Performance Shaders) 后端可用，支持M1/M2处理器加速")
 
 # 模型定义
 class LSTMCRF(nn.Module):
@@ -102,9 +105,9 @@ def preprocess_data(df):
     logger.info("预处理数据...")
     
     # 提取特征和标签
-    # 大乐透: 5个红球(1-35) + 2个蓝球(1-12)
-    red_cols = [col for col in df.columns if col.startswith('红球_')][:5]
-    blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:2]
+    # 双色球: 6个红球(1-33) + 1个蓝球(1-16)
+    red_cols = [col for col in df.columns if col.startswith('红球_')][:6]
+    blue_cols = [col for col in df.columns if col.startswith('蓝球')][:1]
     
     # 确保数据按期数降序排列
     df = df.sort_values('期数', ascending=False).reset_index(drop=True)
@@ -159,18 +162,17 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
     # 初始化模型
     model = LSTMCRF(input_dim, hidden_dim, output_dim, output_seq_length)
     
-    # 使用GPU（如果可用且要求使用）
-    device = None
+    # 设备选择逻辑
     if use_gpu:
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info(f"使用CUDA GPU训练: {torch.cuda.get_device_name(0)}")
         elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
             device = torch.device("mps")
-            logger.info("使用Apple M系列芯片GPU (MPS)训练")
+            logger.info("使用Apple M系列芯片GPU训练 (MPS)")
         else:
             device = torch.device("cpu")
-            logger.info("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练")
+            logger.info("GPU不可用，使用CPU训练")
     else:
         device = torch.device("cpu")
         logger.info("使用CPU训练")
@@ -237,38 +239,34 @@ def save_model(model, scaler, model_dir):
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='训练大乐透预测模型')
+    parser = argparse.ArgumentParser(description='训练双色球预测模型')
     parser.add_argument('--gpu', action='store_true', help='使用GPU训练')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
     args = parser.parse_args()
     
-    # 设置设备
-    device = None
+    # 检查GPU是否可用
     if args.gpu:
         if torch.cuda.is_available():
-            device = torch.device("cuda")
-            logger.info(f"使用CUDA GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"CUDA GPU可用: {torch.cuda.get_device_name(0)}")
             logger.info(f"CUDA版本: {torch.version.cuda}")
         elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
-            device = torch.device("mps")
-            logger.info("使用Apple M系列芯片GPU (MPS)")
+            logger.info("Apple M系列芯片GPU加速可用 (MPS)")
         else:
-            device = torch.device("cpu")
             logger.warning("GPU不可用，将使用CPU训练")
             args.gpu = False
-    else:
-        device = torch.device("cpu")
-        logger.info("使用CPU训练")
     
     # 数据路径
-    data_path = os.path.join(script_dir, 'dlt_history.csv')
+    data_path = os.path.join(project_dir, 'data', 'ssq', 'ssq_history.csv')
     
     # 如果数据文件不存在，尝试使用备用路径
     if not os.path.exists(data_path):
         logger.warning(f"找不到数据文件: {data_path}")
-        data_path = os.path.join(project_dir, 'scripts', 'dlt', 'dlt_history.csv')
-        if not os.path.exists(data_path):
-            logger.error(f"找不到备用数据文件: {data_path}")
+        # 尝试从fetchers目录获取数据
+        fetcher_data_path = os.path.join(project_dir, 'src', 'data', 'fetchers', 'ssq_history.csv')
+        if os.path.exists(fetcher_data_path):
+            data_path = fetcher_data_path
+        else:
+            logger.error(f"找不到数据文件，请先运行数据获取脚本")
             sys.exit(1)
     
     # 加载和预处理数据
@@ -278,10 +276,10 @@ def main():
     # 设置模型参数
     input_dim = X.shape[2]  # 输入特征维度
     hidden_dim = 128  # 隐藏层维度
-    red_output_dim = 35  # 红球输出维度 (1-35)
-    blue_output_dim = 12  # 蓝球输出维度 (1-12)
-    red_output_length = 5  # 红球序列长度
-    blue_output_length = 2  # 蓝球序列长度
+    red_output_dim = 33  # 红球输出维度 (1-33)
+    blue_output_dim = 16  # 蓝球输出维度 (1-16)
+    red_output_length = 6  # 红球序列长度
+    blue_output_length = 1  # 蓝球序列长度
     
     # 训练红球模型
     logger.info("训练红球模型...")
@@ -304,7 +302,7 @@ def main():
     )
 
     # 保存模型
-    model_dir = os.path.join(project_dir, 'model', 'dlt')
+    model_dir = os.path.join(project_dir, 'model', 'ssq')
     
     # 创建组合模型字典
     combined_model = {
@@ -326,7 +324,7 @@ def main():
         os.makedirs(model_dir)
     
     # 保存组合模型
-    torch.save(combined_model, os.path.join(model_dir, 'dlt_model.pth'))
+    torch.save(combined_model, os.path.join(model_dir, 'ssq_model.pth'))
     
     # 保存缩放器
     joblib.dump(scaler, os.path.join(model_dir, 'scaler_X.pkl'))

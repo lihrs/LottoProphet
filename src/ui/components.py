@@ -10,9 +10,9 @@ from PyQt5.QtWidgets import (
     QMenu, QAction
 )
 from PyQt5.QtCore import Qt
-from .theme_manager import ThemeManager, CustomThemeDialog
+from .theme import ThemeManager, CustomThemeDialog
 import torch
-from ..utils.model_utils import name_path
+from utils.model_utils import name_path
 
 def create_main_tab(main_tab):
     """
@@ -61,7 +61,7 @@ def create_main_tab(main_tab):
 
     model_combo.addItem("LSTM-CRF (默认)")
 
-    from ..models.ml_models import MODEL_TYPES
+    from models.ml_models import MODEL_TYPES
     for model_key, model_name in MODEL_TYPES.items():
         model_combo.addItem(model_name)
     

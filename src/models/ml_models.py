@@ -2510,7 +2510,7 @@ class LotteryMLModels:
 # 使用示例
 def demo():
     # 加载数据
-    from scripts.data_analysis import load_lottery_data
+    from data.analysis import load_lottery_data
     lottery_type = 'dlt'  # 或 'ssq'
     df = load_lottery_data(lottery_type)
     

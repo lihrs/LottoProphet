@@ -21,34 +21,34 @@ from PyQt5.QtCore import pyqtSignal, QObject, QThread, Qt, QTimer
 from PyQt5.QtGui import QPixmap
 
 
-from ..utils.model_utils import (
+from utils.model_utils import (
     name_path, load_resources_pytorch, sample_crf_sequences
 )
-from ..models.ml_models import (
+from models.ml_models import (
     LotteryMLModels, MODEL_TYPES
 )
-from ..utils.thread_utils import (
+from utils.threading import (
     TrainModelThread, UpdateDataThread, LogEmitter
 )
-from ..core.prediction import (
+from core.prediction import (
     process_predictions, randomize_numbers
 )
-from .theme_manager import ThemeManager, CustomThemeDialog
+from .theme import ThemeManager, CustomThemeDialog
 from .components import (
     create_main_tab, create_analysis_tab, create_advanced_statistics_tab,
     create_expected_value_tab
 )
-from ..data.processing import (
+from data.processing import (
     process_analysis_data, get_trend_features, prepare_recent_trend_data,
     format_quality_report, format_frequency_stats, format_hot_cold_stats,
     format_gap_stats, format_pattern_stats, format_trend_stats
 )
-from ..data.analysis import (
+from data.analysis import (
     plot_frequency_distribution, plot_hot_cold_numbers, 
     plot_gap_statistics, plot_patterns, plot_trend_analysis,
     load_lottery_data
 )
-from ..data.statistics import (
+from data.statistics import (
     calculate_advanced_statistics, plot_advanced_statistics,
     plot_distribution_analysis
 )
@@ -703,8 +703,8 @@ class LotteryPredictorApp(QMainWindow):
             
             # 确保导入正确的模块
             try:
-                from scripts.data_analysis import load_lottery_data
-                from scripts.advanced_statistics import calculate_advanced_statistics
+                from data.analysis import load_lottery_data
+                from data.statistics import calculate_advanced_statistics
             except ImportError as e:
                 self.log_box.append(f"导入模块失败: {str(e)}")
                 return
@@ -1179,7 +1179,7 @@ def train_model(lottery_type, model_type, log_callback=None):
         log_callback(f"GPU训练已{'' if use_gpu else '不'}启用，使用设备: {device_info}")
         
         # 加载数据
-        from scripts.data_analysis import load_lottery_data
+        from data.analysis import load_lottery_data
         df = load_lottery_data(lottery_type)
         
         if df is None or df.empty:
@@ -1223,7 +1223,7 @@ def predict_next_draw(lottery_type, model_type, num_predictions=5):
     """
     try:
         # 使用机器学习模型预测
-        from scripts.data_analysis import load_lottery_data
+        from data.analysis import load_lottery_data
         
         # 创建模型实例并加载
         ml_model = LotteryMLModels(

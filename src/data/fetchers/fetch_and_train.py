@@ -74,8 +74,9 @@ def train_model(lottery_type, use_gpu, epochs):
             logger.warning("将使用CPU训练")
             use_gpu = False
     
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             f'scripts/{lottery_type}/train_{lottery_type}_model.py')
+    # 获取项目根目录
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    script_path = os.path.join(project_root, 'src', 'models', 'trainers', f'{lottery_type}_trainer.py')
     
     cmd = [sys.executable, script_path, '--epochs', str(epochs)]
     if use_gpu:
