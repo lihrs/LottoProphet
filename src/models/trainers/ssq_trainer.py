@@ -21,7 +21,7 @@ import joblib
 
 # 确保当前目录在sys.path中
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(os.path.dirname(script_dir))
+project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 

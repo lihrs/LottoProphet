@@ -36,7 +36,7 @@ except ImportError:
 
 # 导入期望值模型
 try:
-    from expected_value_model import ExpectedValueLotteryModel
+    from src.core.expected_value import ExpectedValueLotteryModel
     EXPECTED_VALUE_MODEL_AVAILABLE = True
 except ImportError:
     EXPECTED_VALUE_MODEL_AVAILABLE = False

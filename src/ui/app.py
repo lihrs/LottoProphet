@@ -375,7 +375,7 @@ class LotteryPredictorApp(QMainWindow):
                         self.log_emitter.new_log.emit(f"检查期望值模型文件...")
                         
                         # 检查期望值模型目录
-                        from expected_value_model import ExpectedValueLotteryModel
+                        from src.core.expected_value import ExpectedValueLotteryModel
                         
                         # 直接创建期望值模型实例
                         ev_model = ExpectedValueLotteryModel(
@@ -916,8 +916,8 @@ class LotteryPredictorApp(QMainWindow):
         result_text = f"期望值模型预测的{num_predictions}个{lottery_name}号码：\n"
         
         try:
-            # 从expected_value_model.py导入模型
-            from expected_value_model import ExpectedValueLotteryModel
+            # 从core模块导入模型
+            from core.expected_value import ExpectedValueLotteryModel
             
             # 清空日志
             self.ev_log_box.clear()
@@ -1079,8 +1079,8 @@ class LotteryPredictorApp(QMainWindow):
         self.ev_log_box.append(f"开始训练{lottery_name}期望值模型...")
         
         try:
-            # 从expected_value_model.py导入模型
-            from expected_value_model import ExpectedValueLotteryModel
+            # 从core模块导入模型
+            from core.expected_value import ExpectedValueLotteryModel
             
             # 加载数据
             df = load_lottery_data(lottery_type)

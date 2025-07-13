@@ -267,6 +267,7 @@ def main():
     if not os.path.exists(data_path):
         logger.warning(f"找不到数据文件: {data_path}")
         # 尝试从fetchers目录获取数据
+        fetcher_data_path = os.path.join(project_dir, 'src', 'data', 'fetchers', 'dlt_history.csv')
         if os.path.exists(fetcher_data_path):
             data_path = fetcher_data_path
             logger.info(f"使用备用数据路径: {data_path}")
