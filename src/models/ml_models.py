@@ -175,7 +175,7 @@ class LotteryMLModels:
             self.blue_count = 1
         
    
-        self.models_dir = os.path.join(f'./model/{lottery_type}')
+        self.models_dir = os.path.join(f'./models/{lottery_type}')
         os.makedirs(self.models_dir, exist_ok=True)
     
     def log(self, message):

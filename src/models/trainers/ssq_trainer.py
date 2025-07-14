@@ -210,7 +210,7 @@ def train_model(X_train, y_train, input_dim, hidden_dim, output_dim, output_seq_
     plt.title('Training Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.savefig(os.path.join(script_dir, 'training_loss.png'))
+    plt.savefig(os.path.join(project_dir, 'models',  'ssq', 'training_loss.png'))
     
     return model, device
 

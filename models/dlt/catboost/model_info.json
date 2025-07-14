@@ -1,0 +1,14 @@
+{
+    "model_type": "catboost",
+    "lottery_type": "dlt",
+    "feature_window": 10,
+    "created_at": "2025-07-14 22:04:17",
+    "expected_feature_count": 70,
+    "feature_data": {
+        "window_size": 10,
+        "red_count": 5,
+        "blue_count": 2,
+        "red_range": 35,
+        "blue_range": 12
+    }
+}

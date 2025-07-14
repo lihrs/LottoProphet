@@ -12,7 +12,7 @@ from src.core.model import LstmCRFModel
 name_path = {
     "dlt": {
         "name": "大乐透",
-        "path": "./model/dlt/",
+        "path": "./models/dlt/",
         "model_file": "dlt_model.pth",
         "scaler_X_file": "scaler_X.pkl",
         "train_script": "./src/models/trainers/dlt_trainer.py",
@@ -20,7 +20,7 @@ name_path = {
     },
     "ssq": {
         "name": "双色球",
-        "path": "./model/ssq/",
+        "path": "./models/ssq/",
         "model_file": "ssq_model.pth",
         "scaler_X_file": "scaler_X.pkl",
         "train_script": "./src/models/trainers/ssq_trainer.py",
