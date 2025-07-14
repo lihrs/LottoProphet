@@ -13,6 +13,8 @@ from PyQt5.QtCore import Qt
 from .theme import ThemeManager, CustomThemeDialog
 import torch
 from utils.model_utils import name_path
+from utils.device_utils import check_device_availability
+
 
 def create_main_tab(main_tab):
     """
@@ -34,7 +36,6 @@ def create_main_tab(main_tab):
     gpu_available = False
     cuda_device = "不可用"
     try:
-        from utils.device_utils import check_device_availability
         device_info = check_device_availability()
         cuda_available = device_info['cuda_available']
         mps_available = device_info['mps_available']

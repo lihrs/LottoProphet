@@ -18,6 +18,9 @@ import logging
 import traceback
 import warnings
 
+# 导入matplotlib配置
+from src.utils.matplotlib_config import configure_matplotlib
+
 # 忽略警告
 warnings.filterwarnings('ignore')
 
@@ -25,13 +28,8 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger('advanced_statistics')
 
-# 设置中文字体支持
-try:
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans', 'sans-serif']
-    plt.rcParams['axes.unicode_minus'] = False
-except Exception as e:
-    logger.warning(f"设置中文字体支持时出错: {str(e)}")
-    pass
+# 配置matplotlib
+configure_matplotlib()
 
 # 添加自定义的runs_test函数
 def runs_test(x):

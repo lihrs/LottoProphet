@@ -16,12 +16,11 @@ import functools
 import time
 import logging
 
+# 导入matplotlib配置
+from src.utils.matplotlib_config import configure_matplotlib
 
-try:
-    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-    plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
-except:
-    pass
+# 配置matplotlib
+configure_matplotlib()
 
 # 简单缓存装饰器，用于避免重复计算
 def memoize(expire_seconds=300):

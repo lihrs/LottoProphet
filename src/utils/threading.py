@@ -67,6 +67,8 @@ class TrainModelThread(QThread):
         # GPU可用性检查
         device_info = check_device_availability()
         gpu_available = device_info['gpu_available']
+        cuda_available = device_info['cuda_available']
+        mps_available = device_info['mps_available']
         
         if self.use_gpu and not gpu_available:
             self.log_signal.emit("警告: 已选择使用GPU但没有可用的GPU加速后端，将使用CPU训练。")
