@@ -28,7 +28,14 @@ class WrappedXGBoostModel:
     def predict(self, X):
         if self.processor:
             X = self.processor(X)
-        return self.model.predict(X)
+        predictions = self.model.predict(X)
+        
+        # 如果模型有标签映射，需要将预测结果映射回原始标签
+        if hasattr(self.model, 'reverse_mapping'):
+            mapped_predictions = np.array([self.model.reverse_mapping.get(pred, pred) for pred in predictions])
+            return mapped_predictions
+        
+        return predictions
 
 
 class XGBoostModel(BaseMLModel):
@@ -64,15 +71,23 @@ class XGBoostModel(BaseMLModel):
         # 准备数据
         X_train, X_test, red_train_data, red_test_data, blue_train_data, blue_test_data = self.prepare_data(df)
         
-        # 训练红球模型
+        # 训练红球模型 - 为每个红球位置分别训练
         self.log("训练红球XGBoost模型...")
-        red_model = self.train_xgboost(X_train, red_train_data[0], 'red')
-        self.models['red'] = red_model
+        red_models = []
+        for i, red_data in enumerate(red_train_data):
+            self.log(f"训练第{i+1}个红球位置的模型...")
+            red_model = self.train_xgboost(X_train, red_data, 'red')
+            red_models.append(red_model)
+        self.models['red'] = red_models
         
-        # 训练蓝球模型
+        # 训练蓝球模型 - 为每个蓝球位置分别训练
         self.log("训练蓝球XGBoost模型...")
-        blue_model = self.train_xgboost(X_train, blue_train_data[0], 'blue')
-        self.models['blue'] = blue_model
+        blue_models = []
+        for i, blue_data in enumerate(blue_train_data):
+            self.log(f"训练第{i+1}个蓝球位置的模型...")
+            blue_model = self.train_xgboost(X_train, blue_data, 'blue')
+            blue_models.append(blue_model)
+        self.models['blue'] = blue_models
         
         # 评估模型
         self.evaluate(X_test, red_test_data[0].reshape(-1, 1), blue_test_data[0].reshape(-1, 1))
@@ -101,6 +116,42 @@ class XGBoostModel(BaseMLModel):
         y_train = np.array(y_train).flatten().astype(np.int32)
         self.log(f"标签类型: {y_train.dtype}, 形状: {y_train.shape}, 唯一值: {np.unique(y_train)}")
         
+        # 确定预期的类别范围（0-based索引）
+        if ball_type == 'red':
+            expected_classes = np.arange(self.red_range)  # 0 到 red_range-1
+            max_valid_class = self.red_range - 1
+        else:  # blue
+            expected_classes = np.arange(self.blue_range)  # 0 到 blue_range-1
+            max_valid_class = self.blue_range - 1
+        
+        # 在训练前强制修正所有超出范围的标签
+        original_y_train = y_train.copy()
+        y_train = np.clip(y_train, 0, max_valid_class)
+        
+        # 检查是否有修正
+        modified_count = np.sum(original_y_train != y_train)
+        if modified_count > 0:
+            self.log(f"修正了{modified_count}个超出范围的标签")
+            self.log(f"修正前范围: {np.min(original_y_train)} - {np.max(original_y_train)}")
+            self.log(f"修正后范围: {np.min(y_train)} - {np.max(y_train)}")
+        
+        # 检查实际类别是否与预期类别匹配
+        actual_classes = np.unique(y_train)
+        self.log(f"预期类别: {expected_classes}")
+        self.log(f"实际类别: {actual_classes}")
+        
+        # 验证所有类别都在预期范围内
+        if np.min(actual_classes) < 0 or np.max(actual_classes) >= len(expected_classes):
+            self.log(f"错误: 仍然存在超出范围的类别，这不应该发生")
+            self.log(f"实际类别范围: {np.min(actual_classes)} - {np.max(actual_classes)}")
+            self.log(f"预期类别范围: 0 - {len(expected_classes)-1}")
+            raise ValueError(f"标签范围验证失败: 实际范围 {np.min(actual_classes)}-{np.max(actual_classes)}, 预期范围 0-{len(expected_classes)-1}")
+        
+        # 检查是否有缺失的类别
+        missing_classes = np.setdiff1d(expected_classes, actual_classes)
+        if len(missing_classes) > 0:
+            self.log(f"缺失类别: {missing_classes}（这是正常的，不是所有类别都必须出现在训练数据中）")
+        
         # 检查是否有类别样本数量过少的情况
         class_counts = Counter(y_train)
         min_samples = min(class_counts.values()) if class_counts else 0
@@ -125,12 +176,32 @@ class XGBoostModel(BaseMLModel):
             'min_child_weight': [1, 3, 5]
         }
         
-        # 创建XGBoost分类器
+        # 首先创建标签映射，确保所有标签都映射到连续的0-based索引
+        unique_labels = np.unique(y_train)
+        label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
+        reverse_mapping = {idx: label for label, idx in label_mapping.items()}
+        
+        # 应用标签映射
+        y_train_mapped = np.array([label_mapping[label] for label in y_train])
+        self.log(f"标签映射: {dict(list(label_mapping.items())[:10])}...")
+        self.log(f"映射后标签范围: {np.min(y_train_mapped)} - {np.max(y_train_mapped)}")
+        
+        # 创建XGBoost分类器，使用映射后的类别数量
         if self.use_gpu:
             self.log("使用GPU训练XGBoost模型")
-            xgb_model = xgb.XGBClassifier(random_state=42, tree_method='gpu_hist', gpu_id=0)
+            xgb_model = xgb.XGBClassifier(
+                random_state=42, 
+                tree_method='gpu_hist', 
+                gpu_id=0,
+                num_class=len(unique_labels),
+                objective='multi:softprob'
+            )
         else:
-            xgb_model = xgb.XGBClassifier(random_state=42)
+            xgb_model = xgb.XGBClassifier(
+                random_state=42,
+                num_class=len(unique_labels),
+                objective='multi:softprob'
+            )
         
         # 使用随机搜索进行超参数调优
         random_search = RandomizedSearchCV(
@@ -141,48 +212,18 @@ class XGBoostModel(BaseMLModel):
             cv=cv,
             verbose=0,
             random_state=42,
-            n_jobs=-1
+            n_jobs=1  # 使用单进程避免并发问题
         )
         
         # 训练模型
-        try:
-            self.log("开始训练XGBoost模型...")
-            random_search.fit(X_train, y_train)
-            # 获取最佳模型
-            best_xgb = random_search.best_estimator_
-        except ValueError as e:
-            if "Invalid classes inferred from unique values of `y`" in str(e):
-                self.log(f"警告: 类别推断错误，尝试更强的类型转换。错误信息: {str(e)}")
-                # 记录当前标签信息
-                self.log(f"当前标签信息: 类型={y_train.dtype}, 形状={y_train.shape}, 唯一值={np.unique(y_train)}")
-                
-                # 尝试更强的类型转换
-                y_train = np.array(y_train, dtype=np.int32).flatten()
-                self.log(f"重新转换后的标签类型: {y_train.dtype}, 形状: {y_train.shape}, 唯一值: {np.unique(y_train)}")
-                
-                # 重新创建随机搜索对象
-                if self.use_gpu:
-                    xgb_model = xgb.XGBClassifier(random_state=42, tree_method='gpu_hist', gpu_id=0)
-                else:
-                    xgb_model = xgb.XGBClassifier(random_state=42)
-                    
-                random_search = RandomizedSearchCV(
-                    estimator=xgb_model,
-                    param_distributions=param_grid,
-                    n_iter=20,
-                    scoring='accuracy',
-                    cv=cv,
-                    verbose=0,
-                    random_state=42,
-                    n_jobs=-1
-                )
-                
-                self.log("使用转换后的标签重新训练XGBoost模型...")
-                random_search.fit(X_train, y_train)
-                best_xgb = random_search.best_estimator_
-            else:
-                self.log(f"训练过程中出现错误: {str(e)}")
-                raise
+        self.log("开始训练XGBoost模型...")
+        random_search.fit(X_train, y_train_mapped)
+        # 获取最佳模型
+        best_xgb = random_search.best_estimator_
+        
+        # 保存标签映射信息到模型中，以便预测时使用
+        best_xgb.label_mapping = label_mapping
+        best_xgb.reverse_mapping = reverse_mapping
         
         # 记录最佳参数
         self.log(f"最佳参数: {random_search.best_params_}")
@@ -207,33 +248,41 @@ class XGBoostModel(BaseMLModel):
         
         Args:
             X_test: 测试特征
-            y_red_test: 红球测试标签
-            y_blue_test: 蓝球测试标签
+            y_red_test: 红球测试标签列表
+            y_blue_test: 蓝球测试标签列表
             
         Returns:
             红球和蓝球的准确率
         """
         self.log("评估模型性能...")
         
-        if len(y_red_test.shape) == 1:
-            y_red_test = y_red_test.reshape(-1, 1)
-        if len(y_blue_test.shape) == 1:
-            y_blue_test = y_blue_test.reshape(-1, 1)
-            
-        red_accuracy = 0
-        blue_accuracy = 0
+        red_accuracies = []
+        blue_accuracies = []
         
-        if 'red' in self.models:
-            red_preds = self.models['red'].predict(X_test)
-            red_accuracy = accuracy_score(y_red_test, red_preds.reshape(-1, 1))
-            self.log(f"红球模型准确率: {red_accuracy:.4f}")
+        # 评估红球模型
+        if 'red' in self.models and isinstance(self.models['red'], list):
+            for i, (red_model, y_red_test_pos) in enumerate(zip(self.models['red'], y_red_test)):
+                red_preds = red_model.predict(X_test)
+                red_accuracy = accuracy_score(y_red_test_pos, red_preds)
+                red_accuracies.append(red_accuracy)
+                self.log(f"红球位置{i+1}模型准确率: {red_accuracy:.4f}")
         
-        if 'blue' in self.models:
-            blue_preds = self.models['blue'].predict(X_test)
-            blue_accuracy = accuracy_score(y_blue_test, blue_preds.reshape(-1, 1))
-            self.log(f"蓝球模型准确率: {blue_accuracy:.4f}")
+        # 评估蓝球模型
+        if 'blue' in self.models and isinstance(self.models['blue'], list):
+            for i, (blue_model, y_blue_test_pos) in enumerate(zip(self.models['blue'], y_blue_test)):
+                blue_preds = blue_model.predict(X_test)
+                blue_accuracy = accuracy_score(y_blue_test_pos, blue_preds)
+                blue_accuracies.append(blue_accuracy)
+                self.log(f"蓝球位置{i+1}模型准确率: {blue_accuracy:.4f}")
         
-        return red_accuracy, blue_accuracy
+        # 计算平均准确率
+        avg_red_accuracy = np.mean(red_accuracies) if red_accuracies else 0
+        avg_blue_accuracy = np.mean(blue_accuracies) if blue_accuracies else 0
+        
+        self.log(f"红球平均准确率: {avg_red_accuracy:.4f}")
+        self.log(f"蓝球平均准确率: {avg_blue_accuracy:.4f}")
+        
+        return avg_red_accuracy, avg_blue_accuracy
     
     def save_models(self):
         """
@@ -247,17 +296,35 @@ class XGBoostModel(BaseMLModel):
         
         # 保存红球模型
         if 'red' in self.models:
-            model_path = os.path.join(model_dir, 'red_model.pkl')
-            with open(model_path, 'wb') as f:
-                pickle.dump(self.models['red'], f)
-            self.log(f"红球模型保存到: {model_path}")
+            if isinstance(self.models['red'], list):
+                # 保存多个红球位置模型
+                for i, red_model in enumerate(self.models['red']):
+                    model_path = os.path.join(model_dir, f'red_model_pos_{i+1}.pkl')
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(red_model, f)
+                    self.log(f"红球位置{i+1}模型保存到: {model_path}")
+            else:
+                # 保存单个红球模型（向后兼容）
+                model_path = os.path.join(model_dir, 'red_model.pkl')
+                with open(model_path, 'wb') as f:
+                    pickle.dump(self.models['red'], f)
+                self.log(f"红球模型保存到: {model_path}")
         
         # 保存蓝球模型
         if 'blue' in self.models:
-            model_path = os.path.join(model_dir, 'blue_model.pkl')
-            with open(model_path, 'wb') as f:
-                pickle.dump(self.models['blue'], f)
-            self.log(f"蓝球模型保存到: {model_path}")
+            if isinstance(self.models['blue'], list):
+                # 保存多个蓝球位置模型
+                for i, blue_model in enumerate(self.models['blue']):
+                    model_path = os.path.join(model_dir, f'blue_model_pos_{i+1}.pkl')
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(blue_model, f)
+                    self.log(f"蓝球位置{i+1}模型保存到: {model_path}")
+            else:
+                # 保存单个蓝球模型（向后兼容）
+                model_path = os.path.join(model_dir, 'blue_model.pkl')
+                with open(model_path, 'wb') as f:
+                    pickle.dump(self.models['blue'], f)
+                self.log(f"蓝球模型保存到: {model_path}")
         
         # 保存特征缩放器
         if 'X' in self.scalers:

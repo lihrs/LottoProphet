@@ -255,10 +255,17 @@ class BaseMLModel:
             red_labels = []
             blue_labels = []
             for col in red_cols:
-                # 减1转换为0-based索引
-                red_labels.append(df.iloc[i + window_size][col] - 1)
+                # 减1转换为0-based索引，并确保在有效范围内
+                value = df.iloc[i + window_size][col] - 1
+                # 确保红球值在有效范围内 [0, red_range-1]
+                value = max(0, min(value, self.red_range - 1))
+                red_labels.append(value)
             for col in blue_cols:
-                blue_labels.append(df.iloc[i + window_size][col] - 1)
+                # 减1转换为0-based索引，并确保在有效范围内
+                value = df.iloc[i + window_size][col] - 1
+                # 确保蓝球值在有效范围内 [0, blue_range-1]
+                value = max(0, min(value, self.blue_range - 1))
+                blue_labels.append(value)
             
             X_data.append(features)
             y_red_data.append(red_labels)
@@ -268,6 +275,19 @@ class BaseMLModel:
         X = np.array(X_data)
         y_red = np.array(y_red_data, dtype=int)
         y_blue = np.array(y_blue_data, dtype=int)
+        
+        # 验证标签范围
+        self.log(f"红球标签范围: {np.min(y_red)} - {np.max(y_red)}, 预期范围: 0 - {self.red_range-1}")
+        self.log(f"蓝球标签范围: {np.min(y_blue)} - {np.max(y_blue)}, 预期范围: 0 - {self.blue_range-1}")
+        
+        # 检查是否有超出范围的值
+        red_out_of_range = (y_red < 0) | (y_red >= self.red_range)
+        blue_out_of_range = (y_blue < 0) | (y_blue >= self.blue_range)
+        
+        if np.any(red_out_of_range):
+            self.log(f"警告: 发现{np.sum(red_out_of_range)}个超出范围的红球标签")
+        if np.any(blue_out_of_range):
+            self.log(f"警告: 发现{np.sum(blue_out_of_range)}个超出范围的蓝球标签")
         
         # 重塑特征以适合传统ML模型
         X_reshaped = X.reshape(X.shape[0], -1)
