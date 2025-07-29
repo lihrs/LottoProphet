@@ -276,18 +276,32 @@ class BaseMLModel:
         y_red = np.array(y_red_data, dtype=int)
         y_blue = np.array(y_blue_data, dtype=int)
         
+        # 检查数据是否为空
+        if len(X_data) == 0 or len(y_red_data) == 0 or len(y_blue_data) == 0:
+            self.log(f"错误: 生成的训练数据为空。请检查数据集大小({len(df)}行)是否小于特征窗口大小({window_size})。")
+            raise ValueError(f"训练数据为空，无法继续训练。请确保数据集大小大于特征窗口大小({window_size})。")
+        
         # 验证标签范围
-        self.log(f"红球标签范围: {np.min(y_red)} - {np.max(y_red)}, 预期范围: 0 - {self.red_range-1}")
-        self.log(f"蓝球标签范围: {np.min(y_blue)} - {np.max(y_blue)}, 预期范围: 0 - {self.blue_range-1}")
+        if len(y_red) > 0:
+            self.log(f"红球标签范围: {np.min(y_red)} - {np.max(y_red)}, 预期范围: 0 - {self.red_range-1}")
+        else:
+            self.log("警告: 红球标签数组为空，无法计算范围")
+            
+        if len(y_blue) > 0:
+            self.log(f"蓝球标签范围: {np.min(y_blue)} - {np.max(y_blue)}, 预期范围: 0 - {self.blue_range-1}")
+        else:
+            self.log("警告: 蓝球标签数组为空，无法计算范围")
         
         # 检查是否有超出范围的值
-        red_out_of_range = (y_red < 0) | (y_red >= self.red_range)
-        blue_out_of_range = (y_blue < 0) | (y_blue >= self.blue_range)
+        if len(y_red) > 0:
+            red_out_of_range = (y_red < 0) | (y_red >= self.red_range)
+            if np.any(red_out_of_range):
+                self.log(f"警告: 发现{np.sum(red_out_of_range)}个超出范围的红球标签")
         
-        if np.any(red_out_of_range):
-            self.log(f"警告: 发现{np.sum(red_out_of_range)}个超出范围的红球标签")
-        if np.any(blue_out_of_range):
-            self.log(f"警告: 发现{np.sum(blue_out_of_range)}个超出范围的蓝球标签")
+        if len(y_blue) > 0:
+            blue_out_of_range = (y_blue < 0) | (y_blue >= self.blue_range)
+            if np.any(blue_out_of_range):
+                self.log(f"警告: 发现{np.sum(blue_out_of_range)}个超出范围的蓝球标签")
         
         # 重塑特征以适合传统ML模型
         X_reshaped = X.reshape(X.shape[0], -1)

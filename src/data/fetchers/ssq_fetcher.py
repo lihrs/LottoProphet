@@ -7,7 +7,11 @@ import sys
 import logging
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
+if project_dir not in sys.path:
+    sys.path.append(project_dir)
+    
 # ---------------- 配置 ----------------
 name_path = {
     "ssq": {
@@ -229,7 +233,7 @@ def fetch_ssq_data():
     name = "ssq"
     current_number = get_current_number(name)
     df = spider(name, 1, current_number)
-    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), data_file_name)
+    save_path = os.path.join(project_dir, 'data', 'ssq', 'ssq_history.csv')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     try:
         df.to_csv(save_path, encoding="utf-8", index=False)

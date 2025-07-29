@@ -307,3 +307,7 @@ LottoProphet/
    python main.py train dlt  # 训练大乐透模型
    python main.py predict ssq --model lightgbm  # 使用LightGBM模型预测双色球
    ```
+
+
+1 2   4-1 2
+1 3   4-1 2
