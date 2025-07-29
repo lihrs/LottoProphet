@@ -1,0 +1,1 @@
+{"model_type": "lightgbm", "lottery_type": "dlt", "feature_window": 10, "multi_position": true, "red_positions": 5, "blue_positions": 2}

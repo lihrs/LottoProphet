@@ -8,3 +8,7 @@ catboost_info_blue
 catboost_info_red
 model/dlt
 model/ssq
+
+catboost_info_blue
+catboost_info_red
+catboost_info_*
