@@ -90,7 +90,7 @@ class XGBoostModel(BaseMLModel):
         self.models['blue'] = blue_models
         
         # 评估模型
-        self.evaluate(X_test, red_test_data[0].reshape(-1, 1), blue_test_data[0].reshape(-1, 1))
+        self.evaluate(X_test, red_test_data, blue_test_data)
         
         # 保存模型
         self.save_models()
