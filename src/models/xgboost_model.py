@@ -146,44 +146,20 @@ class XGBoostModel(BaseMLModel):
         y_train = np.array(y_train).flatten().astype(np.int32)
         self.log(f"标签类型: {y_train.dtype}, 形状: {y_train.shape}, 唯一值: {np.unique(y_train)}")
         
-        # 确定预期的类别范围（0-based索引）
-        if ball_type == 'red':
-            expected_classes = np.arange(self.red_range)  # 0 到 red_range-1
-            max_valid_class = self.red_range - 1
-        else:  # blue
-            expected_classes = np.arange(self.blue_range)  # 0 到 blue_range-1
-            max_valid_class = self.blue_range - 1
+        # 首先创建标签映射，确保所有标签都映射到连续的0-based索引
+        unique_labels = np.unique(y_train)
+        label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
+        reverse_mapping = {idx: label for label, idx in label_mapping.items()}
         
-        # 在训练前强制修正所有超出范围的标签
-        original_y_train = y_train.copy()
-        y_train = np.clip(y_train, 0, max_valid_class)
-        
-        # 检查是否有修正
-        modified_count = np.sum(original_y_train != y_train)
-        if modified_count > 0:
-            self.log(f"修正了{modified_count}个超出范围的标签")
-            self.log(f"修正前范围: {np.min(original_y_train)} - {np.max(original_y_train)}")
-            self.log(f"修正后范围: {np.min(y_train)} - {np.max(y_train)}")
-        
-        # 检查实际类别是否与预期类别匹配
-        actual_classes = np.unique(y_train)
-        self.log(f"预期类别: {expected_classes}")
-        self.log(f"实际类别: {actual_classes}")
-        
-        # 验证所有类别都在预期范围内
-        if np.min(actual_classes) < 0 or np.max(actual_classes) >= len(expected_classes):
-            self.log(f"错误: 仍然存在超出范围的类别，这不应该发生")
-            self.log(f"实际类别范围: {np.min(actual_classes)} - {np.max(actual_classes)}")
-            self.log(f"预期类别范围: 0 - {len(expected_classes)-1}")
-            raise ValueError(f"标签范围验证失败: 实际范围 {np.min(actual_classes)}-{np.max(actual_classes)}, 预期范围 0-{len(expected_classes)-1}")
-        
-        # 检查是否有缺失的类别
-        missing_classes = np.setdiff1d(expected_classes, actual_classes)
-        if len(missing_classes) > 0:
-            self.log(f"缺失类别: {missing_classes}（这是正常的，不是所有类别都必须出现在训练数据中）")
+        # 应用标签映射
+        y_train_mapped = np.array([label_mapping[label] for label in y_train])
+        self.log(f"原始标签唯一值: {unique_labels}")
+        self.log(f"标签映射: {dict(list(label_mapping.items())[:10])}...")
+        self.log(f"映射后标签范围: {np.min(y_train_mapped)} - {np.max(y_train_mapped)}")
+        self.log(f"映射后类别数量: {len(unique_labels)}")
         
         # 检查是否有类别样本数量过少的情况
-        class_counts = Counter(y_train)
+        class_counts = Counter(y_train_mapped)
         min_samples = min(class_counts.values()) if class_counts else 0
         self.log(f"类别数量: {len(class_counts)}, 最少样本数: {min_samples}")
         
@@ -207,16 +183,6 @@ class XGBoostModel(BaseMLModel):
             'reg_alpha': [0, 0.1, 0.5],  # L1正则化
             'reg_lambda': [1, 1.5, 2]   # L2正则化
         }
-        
-        # 首先创建标签映射，确保所有标签都映射到连续的0-based索引
-        unique_labels = np.unique(y_train)
-        label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
-        reverse_mapping = {idx: label for label, idx in label_mapping.items()}
-        
-        # 应用标签映射
-        y_train_mapped = np.array([label_mapping[label] for label in y_train])
-        self.log(f"标签映射: {dict(list(label_mapping.items())[:10])}...")
-        self.log(f"映射后标签范围: {np.min(y_train_mapped)} - {np.max(y_train_mapped)}")
         
         # 创建优化的XGBoost分类器
         base_params = {
