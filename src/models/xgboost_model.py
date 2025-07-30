@@ -1,76 +1,111 @@
-# -*- coding:utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-XGBoost model implementation for lottery prediction
-优化版本：提升性能、速度和预测准确性
+XGBoost model for lottery prediction
+优化版本：增强参数调优、特征工程和模型评估
 """
 
 import os
+import sys
 import time
+import uuid
+import json
+import pickle
+import platform
 import numpy as np
 import pandas as pd
-import pickle
-import joblib
-import json
-import xgboost as xgb
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, KFold
-from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
+from datetime import datetime
 from collections import Counter
-import warnings
-from typing import List, Tuple, Dict, Any
+from scipy import stats
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold, StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
+from xgboost import XGBClassifier
 
-from .base import BaseMLModel
+# 添加项目根目录到Python路径
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_dir = os.path.dirname(os.path.dirname(script_dir))
+if project_dir not in sys.path:
+    sys.path.append(project_dir)
 
-# 忽略XGBoost的警告信息
-warnings.filterwarnings('ignore', category=UserWarning, module='xgboost')
+from src.models.base import BaseMLModel
+from src.utils.device_utils import check_device_availability
 
 
 class WrappedXGBoostModel:
     """
-    XGBoost模型包装器，用于统一预测接口
-    优化版本：支持概率预测和更好的预测策略
+    包装XGBoost模型，提供统一的预测接口
+    支持概率预测和top-k预测
     """
-    def __init__(self, model, processor=None):
+    
+    def __init__(self, model, reverse_mapping=None):
+        """
+        初始化包装模型
+        
+        Args:
+            model: XGBoost模型
+            reverse_mapping: 标签逆映射字典，用于将预测的类别索引转换回原始标签
+        """
         self.model = model
-        self.processor = processor
-        
+        self.reverse_mapping = reverse_mapping
+    
     def predict(self, X):
-        """预测类别"""
-        if self.processor:
-            X = self.processor(X)
-        predictions = self.model.predict(X)
+        """
+        预测类别
         
-        # 如果模型有标签映射，需要将预测结果映射回原始标签
-        if hasattr(self.model, 'reverse_mapping'):
-            mapped_predictions = np.array([self.model.reverse_mapping.get(pred, pred) for pred in predictions])
-            return mapped_predictions
-        
-        return predictions
+        Args:
+            X: 特征数据
+            
+        Returns:
+            预测的类别
+        """
+        return self.model.predict(X)
     
     def predict_proba(self, X):
-        """预测概率分布"""
-        if self.processor:
-            X = self.processor(X)
+        """
+        预测概率分布
+        
+        Args:
+            X: 特征数据
+            
+        Returns:
+            预测的概率分布
+        """
         return self.model.predict_proba(X)
     
-    def predict_top_k(self, X, k=3):
-        """预测前k个最可能的类别"""
-        probas = self.predict_proba(X)
-        if len(probas.shape) == 1:
-            return [np.argsort(probas)[-k:][::-1]]
-        else:
-            top_k_indices = []
-            for i in range(probas.shape[0]):
-                top_k = np.argsort(probas[i])[-k:][::-1]
-                # 如果模型有标签映射，映射回原始标签
-                if hasattr(self.model, 'reverse_mapping'):
-                    top_k = [self.model.reverse_mapping.get(idx, idx) for idx in top_k]
-                top_k_indices.append(top_k)
-            return top_k_indices
+    def predict_top_k(self, X, k=5):
+        """
+        预测概率最高的k个类别
+        
+        Args:
+            X: 特征数据
+            k: 返回的类别数量
+            
+        Returns:
+            (top_k_indices, top_k_probs): 概率最高的k个类别索引和对应的概率
+        """
+        proba = self.predict_proba(X)
+        top_k_indices = np.argsort(proba, axis=1)[:, -k:][:, ::-1]
+        top_k_probs = np.array([proba[i, top_k_indices[i]] for i in range(len(X))])
+        
+        # 如果有逆映射，应用到索引上
+        if self.reverse_mapping is not None:
+            mapped_indices = np.zeros_like(top_k_indices)
+            for i in range(top_k_indices.shape[0]):
+                for j in range(top_k_indices.shape[1]):
+                    idx = top_k_indices[i, j]
+                    mapped_indices[i, j] = self.reverse_mapping.get(idx, idx)
+            return mapped_indices, top_k_probs
+        
+        return top_k_indices, top_k_probs
 
 
 class XGBoostModel(BaseMLModel):
     """
-    XGBoost模型实现
+    XGBoost模型用于彩票预测
+    优化版本：增强参数调优、特征工程和模型评估
     """
     
     def __init__(self, lottery_type='dlt', feature_window=10, log_callback=None, use_gpu=False):
@@ -85,428 +120,877 @@ class XGBoostModel(BaseMLModel):
         """
         super().__init__(lottery_type, feature_window, log_callback, use_gpu)
         self.model_type = 'xgboost'
+        self.current_model_version = None
+        
+        # 检查GPU可用性
+        if use_gpu:
+            device_info = check_device_availability()
+            self.use_gpu = device_info['gpu_available']
+            if self.use_gpu:
+                self.log(f"将使用GPU训练XGBoost模型: {device_info['gpu_name']}")
+            else:
+                self.log("GPU不可用，将使用CPU训练XGBoost模型")
+        else:
+            self.use_gpu = False
+            self.log("将使用CPU训练XGBoost模型")
     
-    def train(self, df):
+    def train(self, data, test_size=0.2, random_state=42, n_iter_search=50, cv=5, early_stopping_rounds=20):
         """
         训练XGBoost模型
         
         Args:
-            df: 包含历史开奖数据的DataFrame
+            data: 训练数据DataFrame
+            test_size: 测试集比例
+            random_state: 随机种子
+            n_iter_search: 随机搜索迭代次数
+            cv: 交叉验证折数
+            early_stopping_rounds: 早停轮数
             
         Returns:
-            训练好的模型
+            训练结果字典
         """
-        self.log("\n----- 开始训练XGBoost模型 -----")
+        self.log(f"开始训练{self.lottery_type}的XGBoost模型...")
+        start_time = time.time()
         
-        # 准备数据
-        X_train, X_test, red_train_data, red_test_data, blue_train_data, blue_test_data = self.prepare_data(df)
+        # 准备训练数据
+        X_train, X_test, red_train_data, red_test_data, blue_train_data, blue_test_data = self.prepare_data(data, test_size)
         
-        # 训练红球模型 - 为每个红球位置分别训练
-        self.log("训练红球XGBoost模型...")
+        # 训练红球模型
+        self.log("训练红球模型...")
         red_models = []
-        for i, red_data in enumerate(red_train_data):
-            self.log(f"训练第{i+1}个红球位置的模型...")
-            red_model = self.train_xgboost(X_train, red_data, 'red')
-            red_models.append(red_model)
-        self.models['red'] = red_models
+        red_train_results = []
         
-        # 训练蓝球模型 - 为每个蓝球位置分别训练
-        self.log("训练蓝球XGBoost模型...")
+        for i, (y_train, y_test) in enumerate(zip(red_train_data, red_test_data)):
+            position = i + 1
+            self.log(f"训练红球位置{position}模型...")
+            
+            model, train_result = self.train_xgboost(
+                X_train, y_train, X_test, y_test,
+                ball_type='red', position=position,
+                n_iter_search=n_iter_search, cv=cv,
+                early_stopping_rounds=early_stopping_rounds,
+                random_state=random_state
+            )
+            
+            red_models.append(model)
+            red_train_results.append(train_result)
+        
+        # 训练蓝球模型
+        self.log("训练蓝球模型...")
         blue_models = []
-        for i, blue_data in enumerate(blue_train_data):
-            self.log(f"训练第{i+1}个蓝球位置的模型...")
-            blue_model = self.train_xgboost(X_train, blue_data, 'blue')
-            blue_models.append(blue_model)
-        self.models['blue'] = blue_models
+        blue_train_results = []
         
-        # 评估模型
-        self.evaluate(X_test, red_test_data, blue_test_data)
+        for i, (y_train, y_test) in enumerate(zip(blue_train_data, blue_test_data)):
+            position = i + 1
+            self.log(f"训练蓝球位置{position}模型...")
+            
+            model, train_result = self.train_xgboost(
+                X_train, y_train, X_test, y_test,
+                ball_type='blue', position=position,
+                n_iter_search=n_iter_search, cv=cv,
+                early_stopping_rounds=early_stopping_rounds,
+                random_state=random_state
+            )
+            
+            blue_models.append(model)
+            blue_train_results.append(train_result)
         
         # 保存模型
-        self.save_models()
+        self.models['red'] = red_models
+        self.models['blue'] = blue_models
         
-        return self.models
+        # 计算总训练时间
+        train_time = time.time() - start_time
+        self.log(f"XGBoost模型训练完成，耗时{train_time:.2f}秒")
+        
+        # 评估模型
+        self.log("评估模型性能...")
+        evaluation_results = self.evaluate(X_test, red_test_data, blue_test_data)
+        
+        # 保存模型和训练结果
+        self.log("保存模型...")
+        save_result = self.save_models(red_train_results, blue_train_results, evaluation_results)
+        
+        # 返回训练结果
+        return {
+            'red_models': red_models,
+            'blue_models': blue_models,
+            'red_train_results': red_train_results,
+            'blue_train_results': blue_train_results,
+            'evaluation_results': evaluation_results,
+            'train_time': train_time,
+            'save_result': save_result
+        }
     
-    def train_xgboost(self, X_train, y_train, ball_type):
+    def train_xgboost(self, X_train, y_train, X_test, y_test, ball_type, position, 
+                     n_iter_search=50, cv=5, early_stopping_rounds=20, random_state=42):
         """
-        训练XGBoost模型，使用优化的超参数调优和早停机制
+        训练单个XGBoost模型
         
         Args:
             X_train: 训练特征
             y_train: 训练标签
-            ball_type: 球类型，'red'或'blue'
+            X_test: 测试特征
+            y_test: 测试标签
+            ball_type: 球类型 ('red' 或 'blue')
+            position: 位置索引
+            n_iter_search: 随机搜索迭代次数
+            cv: 交叉验证折数
+            early_stopping_rounds: 早停轮数
+            random_state: 随机种子
             
         Returns:
-            训练好的XGBoost模型
+            (model, train_result): 训练好的模型和训练结果
         """
-        self.log(f"训练{ball_type}球XGBoost模型...")
-        self.log(f"原始数据维度: 特征={X_train.shape}, 标签={y_train.shape}")
-        
-        # 确保y_train是整数类型，并转换为一维数组
-        y_train = np.array(y_train).flatten().astype(np.int32)
-        self.log(f"标签类型: {y_train.dtype}, 形状: {y_train.shape}, 唯一值: {np.unique(y_train)}")
-        
-        # 首先创建标签映射，确保所有标签都映射到连续的0-based索引
+        # 处理标签映射，确保标签是连续的0-based索引
         unique_labels = np.unique(y_train)
-        label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
-        reverse_mapping = {idx: label for label, idx in label_mapping.items()}
+        label_mapping = {label: i for i, label in enumerate(unique_labels)}
+        reverse_mapping = {i: label for label, i in label_mapping.items()}
         
         # 应用标签映射
-        y_train_mapped = np.array([label_mapping[label] for label in y_train])
-        self.log(f"原始标签唯一值: {unique_labels}")
-        self.log(f"标签映射: {dict(list(label_mapping.items())[:10])}...")
-        self.log(f"映射后标签范围: {np.min(y_train_mapped)} - {np.max(y_train_mapped)}")
-        self.log(f"映射后类别数量: {len(unique_labels)}")
+        y_train_mapped = np.array([label_mapping.get(label, label) for label in y_train])
+        y_test_mapped = np.array([label_mapping.get(label, label) for label in y_test])
         
-        # 检查是否有类别样本数量过少的情况
-        class_counts = Counter(y_train_mapped)
-        min_samples = min(class_counts.values()) if class_counts else 0
-        self.log(f"类别数量: {len(class_counts)}, 最少样本数: {min_samples}")
+        # 检查标签是否在合理范围内
+        if ball_type == 'red':
+            max_label = self.red_range - 1
+        else:  # blue
+            max_label = self.blue_range - 1
+        
+        # 检查是否有超出范围的标签
+        out_of_range = (y_train_mapped < 0) | (y_train_mapped > max_label)
+        if np.any(out_of_range):
+            self.log(f"警告: 发现{np.sum(out_of_range)}个超出范围的{ball_type}球标签，已调整为有效范围")
+            y_train_mapped = np.clip(y_train_mapped, 0, max_label)
+        
+        out_of_range = (y_test_mapped < 0) | (y_test_mapped > max_label)
+        if np.any(out_of_range):
+            self.log(f"警告: 发现{np.sum(out_of_range)}个超出范围的{ball_type}球测试标签，已调整为有效范围")
+            y_test_mapped = np.clip(y_test_mapped, 0, max_label)
+        
+        # 设置XGBoost参数搜索空间
+        if ball_type == 'red':
+            if self.lottery_type == 'ssq':
+                # 双色球红球参数搜索空间
+                param_dist = {
+                    'n_estimators': [100, 200, 300, 500, 800, 1000],
+                    'learning_rate': [0.01, 0.03, 0.05, 0.08, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6, 8, 10],
+                    'min_child_weight': [1, 3, 5, 7],
+                    'gamma': [0, 0.1, 0.2, 0.3, 0.5],
+                    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'reg_alpha': [0, 0.001, 0.01, 0.1, 1, 10],
+                    'reg_lambda': [0.01, 0.1, 1, 10, 100],
+                    'scale_pos_weight': [1, 3, 5]
+                }
+            else:  # dlt
+                # 大乐透红球参数搜索空间
+                param_dist = {
+                    'n_estimators': [100, 200, 300, 500, 800, 1000],
+                    'learning_rate': [0.01, 0.03, 0.05, 0.08, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6, 8],
+                    'min_child_weight': [1, 3, 5, 7],
+                    'gamma': [0, 0.1, 0.2, 0.3, 0.5],
+                    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'reg_alpha': [0, 0.001, 0.01, 0.1, 1],
+                    'reg_lambda': [0.01, 0.1, 1, 10],
+                    'scale_pos_weight': [1, 3, 5]
+                }
+        else:  # blue
+            if self.lottery_type == 'ssq':
+                # 双色球蓝球参数搜索空间
+                param_dist = {
+                    'n_estimators': [100, 200, 300, 500, 800],
+                    'learning_rate': [0.01, 0.03, 0.05, 0.08, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6, 8],
+                    'min_child_weight': [1, 2, 3, 5],
+                    'gamma': [0, 0.1, 0.2, 0.3],
+                    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'reg_alpha': [0, 0.001, 0.01, 0.1],
+                    'reg_lambda': [0.01, 0.1, 1, 10],
+                    'scale_pos_weight': [1, 2, 3]
+                }
+            else:  # dlt
+                # 大乐透蓝球参数搜索空间
+                param_dist = {
+                    'n_estimators': [100, 200, 300, 500, 800],
+                    'learning_rate': [0.01, 0.03, 0.05, 0.08, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6],
+                    'min_child_weight': [1, 2, 3, 5],
+                    'gamma': [0, 0.1, 0.2, 0.3],
+                    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+                    'reg_alpha': [0, 0.001, 0.01, 0.1],
+                    'reg_lambda': [0.01, 0.1, 1, 10],
+                    'scale_pos_weight': [1, 2, 3]
+                }
+        
+        # 根据数据集大小动态调整搜索次数
+        adjusted_n_iter = min(n_iter_search, len(X_train) // 10)
+        adjusted_n_iter = max(adjusted_n_iter, 10)  # 至少10次
+        
+        # 创建基础XGBoost分类器
+        if self.use_gpu:
+            base_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state)
+        else:
+            base_model = XGBClassifier(tree_method='hist', random_state=random_state)
         
         # 设置交叉验证策略
-        if min_samples < 2:
-            # 如果有类别样本数量过少，使用KFold代替StratifiedKFold
-            self.log(f"警告: 某些类别样本数量过少(最少{min_samples}个)，使用KFold代替StratifiedKFold")
-            cv = KFold(n_splits=5, shuffle=True, random_state=42)
-        else:
-            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        # 检查每个类别的样本数量，确保分层抽样可行
+        unique_classes, class_counts = np.unique(y_train_mapped, return_counts=True)
+        min_samples_per_class = np.min(class_counts)
         
-        # 优化的超参数搜索空间 - 更加精细和高效
-        param_grid = {
-            'n_estimators': [200, 300, 500, 800],  # 增加树的数量范围
-            'max_depth': [4, 6, 8, 10],  # 调整深度范围
-            'learning_rate': [0.05, 0.1, 0.15, 0.2],  # 优化学习率范围
-            'subsample': [0.7, 0.8, 0.9],  # 减少搜索空间但保持有效范围
-            'colsample_bytree': [0.7, 0.8, 0.9],  # 特征采样比例
-            'gamma': [0, 0.1, 0.2, 0.3],  # 最小分裂损失
-            'min_child_weight': [1, 3, 5, 7],  # 叶子节点最小权重
-            'reg_alpha': [0, 0.1, 0.5],  # L1正则化
-            'reg_lambda': [1, 1.5, 2]   # L2正则化
+        # 如果最小类别样本数小于2或只有一个类别，则使用普通K折交叉验证
+        if len(unique_classes) > 1 and min_samples_per_class >= 2:
+            # 使用分层K折交叉验证
+            cv_strategy = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+        else:
+            # 如果只有一个类别或某类别样本数不足，使用普通K折交叉验证
+            cv_strategy = KFold(n_splits=cv, shuffle=True, random_state=random_state)
+        
+        # 设置评分指标
+        scoring = {
+            'accuracy': 'accuracy',
+            'f1_weighted': 'f1_weighted',
+            'precision_weighted': 'precision_weighted',
+            'recall_weighted': 'recall_weighted',
+            'neg_log_loss': 'neg_log_loss'
         }
         
-        # 创建优化的XGBoost分类器
-        base_params = {
-            'random_state': 42,
-            'num_class': len(unique_labels),
-            'objective': 'multi:softprob',
-            'eval_metric': 'mlogloss',
-            'early_stopping_rounds': 50,  # 早停机制
-            'verbosity': 0  # 减少输出
-        }
-        
-        if self.use_gpu:
-            self.log("使用GPU训练XGBoost模型")
-            base_params.update({
-                'tree_method': 'gpu_hist',
-                'gpu_id': 0
-            })
-        else:
-            base_params['tree_method'] = 'hist'  # 使用直方图算法加速
-            
-        xgb_model = xgb.XGBClassifier(**base_params)
-        
-        # 使用优化的随机搜索进行超参数调优
-        n_iter = min(30, len(y_train_mapped) // 10)  # 根据数据量动态调整搜索次数
-        n_iter = max(10, n_iter)  # 至少搜索10次
-        
+        # 创建随机搜索对象
         random_search = RandomizedSearchCV(
-            estimator=xgb_model,
-            param_distributions=param_grid,
-            n_iter=n_iter,
-            scoring='accuracy',
-            cv=cv,
+            base_model,
+            param_distributions=param_dist,
+            n_iter=adjusted_n_iter,
+            scoring=scoring,
+            refit='neg_log_loss',  # 使用负对数损失作为主要优化指标
+            cv=cv_strategy,
+            random_state=random_state,
+            n_jobs=-1,  # 使用所有可用CPU
             verbose=0,
-            random_state=42,
-            n_jobs=-1 if not self.use_gpu else 1,  # GPU时使用单进程，CPU时使用多进程
-            return_train_score=True  # 返回训练分数用于分析
+            return_train_score=True
         )
         
-        # 训练模型
-        self.log(f"开始训练{ball_type}球XGBoost模型，搜索{n_iter}种参数组合...")
-        start_time = time.time()
+        # 执行随机搜索
+        self.log(f"开始{ball_type}球位置{position}的参数搜索，迭代次数: {adjusted_n_iter}")
+        search_start_time = time.time()
+        random_search.fit(X_train, y_train_mapped)
+        search_time = time.time() - search_start_time
         
-        # 分割验证集用于早停
-        from sklearn.model_selection import train_test_split
+        # 获取最佳参数和分数
+        best_params = random_search.best_params_
+        best_score = random_search.best_score_
+        cv_results = random_search.cv_results_
         
-        # 检查是否可以使用分层抽样
-        class_counts_mapped = Counter(y_train_mapped)
-        min_samples_mapped = min(class_counts_mapped.values()) if class_counts_mapped else 0
+        self.log(f"{ball_type}球位置{position}参数搜索完成，耗时{search_time:.2f}秒")
+        self.log(f"最佳参数: {best_params}")
+        self.log(f"最佳交叉验证分数: {best_score:.4f}")
         
-        if min_samples_mapped < 2:
-            # 如果有类别样本数量过少，不使用分层抽样
-            self.log(f"警告: 某些类别样本数量过少(最少{min_samples_mapped}个)，train_test_split不使用分层抽样")
-            X_train_fit, X_val, y_train_fit, y_val = train_test_split(
-                X_train, y_train_mapped, test_size=0.2, random_state=42
-            )
+        # 使用最佳参数创建模型
+        if self.use_gpu:
+            model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, **best_params)
         else:
-            # 使用分层抽样
-            X_train_fit, X_val, y_train_fit, y_val = train_test_split(
-                X_train, y_train_mapped, test_size=0.2, random_state=42, stratify=y_train_mapped
-            )
+            model = XGBClassifier(tree_method='hist', random_state=random_state, **best_params)
         
-        # 设置验证集用于早停
-        eval_set = [(X_val, y_val)]
+        # 分割训练集和验证集
+        # 检查每个类别的样本数量，确保分层抽样可行
+        unique_classes, class_counts = np.unique(y_train_mapped, return_counts=True)
+        min_samples_per_class = np.min(class_counts)
         
-        # 拟合模型
-        random_search.fit(
-            X_train_fit, y_train_fit,
-            eval_set=eval_set,
+        # 如果最小类别样本数小于2，则不使用分层抽样
+        use_stratify = len(unique_classes) > 1 and min_samples_per_class >= 2
+        
+        X_train_split, X_val, y_train_split, y_val = train_test_split(
+            X_train, y_train_mapped, test_size=0.2, random_state=random_state,
+            stratify=y_train_mapped if use_stratify else None
+        )
+        
+        # 训练最终模型，使用验证集进行早停
+        train_start_time = time.time()
+        model.fit(
+            X_train_split, y_train_split,
+            eval_set=[(X_val, y_val)],
+            eval_metric=['mlogloss', 'merror'],
+            early_stopping_rounds=early_stopping_rounds,
             verbose=False
         )
+        train_time = time.time() - train_start_time
         
-        training_time = time.time() - start_time
-        self.log(f"训练完成，耗时: {training_time:.2f}秒")
+        # 在测试集上评估模型
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)
         
-        # 获取最佳模型
-        best_xgb = random_search.best_estimator_
+        # 计算评估指标
+        accuracy = accuracy_score(y_test_mapped, y_pred)
+        precision = precision_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+        recall = recall_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+        f1 = f1_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
         
-        # 保存标签映射信息到模型中，以便预测时使用
-        best_xgb.label_mapping = label_mapping
-        best_xgb.reverse_mapping = reverse_mapping
+        # 计算对数损失
+        try:
+            log_loss_value = log_loss(y_test_mapped, y_pred_proba)
+        except ValueError:
+            # 如果预测概率中有0或1，可能会导致对数损失计算出错
+            log_loss_value = float('inf')
         
-        # 记录详细的训练结果
-        self.log(f"最佳参数: {random_search.best_params_}")
-        self.log(f"交叉验证最佳得分: {random_search.best_score_:.4f}")
+        # 计算混淆矩阵
+        cm = confusion_matrix(y_test_mapped, y_pred)
         
-        # 分析过拟合情况
-        if hasattr(random_search, 'cv_results_'):
-            best_idx = random_search.best_index_
-            train_score = random_search.cv_results_['mean_train_score'][best_idx]
-            val_score = random_search.cv_results_['mean_test_score'][best_idx]
-            overfitting = train_score - val_score
-            self.log(f"训练得分: {train_score:.4f}, 验证得分: {val_score:.4f}")
-            if overfitting > 0.1:
-                self.log(f"警告: 可能存在过拟合 (差异: {overfitting:.4f})")
+        # 获取特征重要性
+        feature_importances = model.feature_importances_
         
-        # 记录特征重要性
-        feature_importances = best_xgb.feature_importances_
-        top_n = min(15, len(feature_importances))  # 显示前15个最重要的特征
-        indices = np.argsort(feature_importances)[-top_n:][::-1]
-        self.log(f"前{top_n}个最重要特征的重要性:")
-        for rank, i in enumerate(indices, 1):
-            self.log(f"第{rank}位 - 特征{i}: {feature_importances[i]:.4f}")
+        # 分析特征重要性
+        importance_analysis = self._analyze_feature_importance(feature_importances)
         
-        # 计算特征重要性统计
-        importance_sum = np.sum(feature_importances)
-        top_10_importance = np.sum(feature_importances[indices[:10]])
-        self.log(f"前10个特征重要性占比: {top_10_importance/importance_sum:.2%}")
+        # 检查过拟合
+        train_score = model.score(X_train, y_train_mapped)
+        test_score = model.score(X_test, y_test_mapped)
+        overfit_ratio = train_score / max(test_score, 1e-10)  # 避免除以0
         
-        # 包装模型以统一接口
-        wrapped_model = WrappedXGBoostModel(best_xgb)
+        # 如果过拟合严重，尝试调整正则化参数
+        if overfit_ratio > 1.3:  # 训练集得分比测试集高30%以上
+            self.log(f"检测到{ball_type}球位置{position}模型可能存在过拟合，训练集/测试集得分比: {overfit_ratio:.2f}")
+            self.log("尝试增加正则化强度...")
+            
+            # 增加正则化参数
+            adjusted_params = best_params.copy()
+            adjusted_params['reg_alpha'] = best_params.get('reg_alpha', 0) * 2 + 0.1
+            adjusted_params['reg_lambda'] = best_params.get('reg_lambda', 1) * 2
+            adjusted_params['learning_rate'] = best_params.get('learning_rate', 0.1) * 0.8
+            
+            # 创建调整后的模型
+            if self.use_gpu:
+                adjusted_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, **adjusted_params)
+            else:
+                adjusted_model = XGBClassifier(tree_method='hist', random_state=random_state, **adjusted_params)
+            
+            # 训练调整后的模型
+            adjusted_model.fit(
+                X_train_split, y_train_split,
+                eval_set=[(X_val, y_val)],
+                eval_metric=['mlogloss', 'merror'],
+                early_stopping_rounds=early_stopping_rounds,
+                verbose=False
+            )
+            
+            # 评估调整后的模型
+            adjusted_train_score = adjusted_model.score(X_train, y_train_mapped)
+            adjusted_test_score = adjusted_model.score(X_test, y_test_mapped)
+            adjusted_overfit_ratio = adjusted_train_score / max(adjusted_test_score, 1e-10)
+            
+            self.log(f"调整后的训练集/测试集得分比: {adjusted_overfit_ratio:.2f}")
+            
+            # 如果调整后的模型更好，使用调整后的模型
+            if adjusted_test_score >= test_score * 0.95 and adjusted_overfit_ratio < overfit_ratio:
+                self.log("使用调整后的模型，过拟合程度降低")
+                model = adjusted_model
+                train_score = adjusted_train_score
+                test_score = adjusted_test_score
+                overfit_ratio = adjusted_overfit_ratio
+            else:
+                self.log("保留原始模型，调整后的模型性能下降")
         
-        return wrapped_model
+        # 创建包装模型
+        wrapped_model = WrappedXGBoostModel(model, reverse_mapping)
+        
+        # 收集训练结果
+        train_result = {
+            'ball_type': ball_type,
+            'position': position,
+            'best_params': best_params,
+            'best_cv_score': best_score,
+            'cv_results': {
+                'mean_test_accuracy': np.mean(cv_results['mean_test_accuracy']),
+                'mean_test_f1_weighted': np.mean(cv_results['mean_test_f1_weighted']),
+                'mean_test_precision_weighted': np.mean(cv_results['mean_test_precision_weighted']),
+                'mean_test_recall_weighted': np.mean(cv_results['mean_test_recall_weighted']),
+                'mean_test_neg_log_loss': np.mean(cv_results['mean_test_neg_log_loss'])
+            },
+            'test_metrics': {
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'log_loss': log_loss_value
+            },
+            'confusion_matrix': cm.tolist(),
+            'feature_importances': feature_importances.tolist(),
+            'importance_analysis': importance_analysis,
+            'train_score': train_score,
+            'test_score': test_score,
+            'overfit_ratio': overfit_ratio,
+            'n_features': X_train.shape[1],
+            'n_samples': X_train.shape[0],
+            'class_distribution': Counter(y_train_mapped),
+            'search_time': search_time,
+            'train_time': train_time,
+            'model_complexity': {
+                'n_estimators': model.n_estimators,
+                'max_depth': model.max_depth,
+                'n_classes': model.n_classes_
+            },
+            'label_mapping': label_mapping,
+            'reverse_mapping': reverse_mapping
+        }
+        
+        return wrapped_model, train_result
     
-    def evaluate(self, X_test, y_red_test, y_blue_test):
+    def _analyze_feature_importance(self, importances):
+        """
+        分析特征重要性
+        
+        Args:
+            importances: 特征重要性数组
+            
+        Returns:
+            特征重要性分析结果字典
+        """
+        # 计算前N个特征的重要性占比
+        sorted_idx = np.argsort(importances)[::-1]
+        sorted_importances = importances[sorted_idx]
+        total_importance = np.sum(importances)
+        
+        # 计算前10个特征的累计重要性
+        top_n = min(10, len(importances))
+        top_n_importance = np.sum(sorted_importances[:top_n]) / total_importance
+        
+        # 计算零重要性特征的比例
+        zero_importance = np.sum(importances == 0) / len(importances)
+        
+        # 计算特征重要性的统计信息
+        stats_dict = {
+            'max': np.max(importances),
+            'min': np.min(importances),
+            'mean': np.mean(importances),
+            'median': np.median(importances),
+            'variance': np.var(importances),
+            'std': np.std(importances),
+            'skewness': stats.skew(importances) if len(importances) > 2 else 0,
+            'kurtosis': stats.kurtosis(importances) if len(importances) > 2 else 0,
+            'entropy': stats.entropy(importances + 1e-10) if len(importances) > 1 else 0,
+            'quantile_25': np.percentile(importances, 25),
+            'quantile_75': np.percentile(importances, 75),
+            'quantile_90': np.percentile(importances, 90)
+        }
+        
+        # 检查是否符合80/20法则（帕累托原则）
+        # 即20%的特征是否贡献了80%的重要性
+        n_features = len(importances)
+        n_top_20_percent = max(1, int(n_features * 0.2))
+        top_20_percent_importance = np.sum(sorted_importances[:n_top_20_percent]) / total_importance
+        pareto_principle_satisfied = top_20_percent_importance >= 0.8
+        
+        return {
+            'top_n_importance_ratio': top_n_importance,
+            'top_n': top_n,
+            'zero_importance_ratio': zero_importance,
+            'stats': stats_dict,
+            'pareto_principle': {
+                'satisfied': pareto_principle_satisfied,
+                'top_20_percent_importance': top_20_percent_importance
+            }
+        }
+    
+    def evaluate(self, X_test, red_test_data, blue_test_data):
         """
         评估模型性能
         
         Args:
             X_test: 测试特征
-            y_red_test: 红球测试标签列表
-            y_blue_test: 蓝球测试标签列表
+            red_test_data: 红球测试标签
+            blue_test_data: 蓝球测试标签
             
         Returns:
-            红球和蓝球的准确率
+            评估结果字典
         """
-        self.log("评估模型性能...")
+        self.log("评估红球模型性能...")
+        red_metrics = []
         
-        red_accuracies = []
-        blue_accuracies = []
+        for i, (model, y_test) in enumerate(zip(self.models['red'], red_test_data)):
+            position = i + 1
+            self.log(f"评估红球位置{position}模型...")
+            
+            # 预测
+            y_pred = model.predict(X_test)
+            y_pred_proba = model.predict_proba(X_test)
+            
+            # 应用标签映射
+            if hasattr(model.model, 'classes_'):
+                classes = model.model.classes_
+                y_test_mapped = np.array([np.where(classes == y)[0][0] if y in classes else -1 for y in y_test])
+                # 处理不在classes中的标签
+                y_test_mapped = np.array([y if y >= 0 else 0 for y in y_test_mapped])
+            else:
+                y_test_mapped = y_test
+            
+            # 计算评估指标
+            accuracy = accuracy_score(y_test_mapped, y_pred)
+            precision = precision_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            recall = recall_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            f1 = f1_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            
+            # 计算对数损失
+            try:
+                log_loss_value = log_loss(y_test_mapped, y_pred_proba)
+            except ValueError:
+                log_loss_value = float('inf')
+            
+            # 计算混淆矩阵
+            cm = confusion_matrix(y_test_mapped, y_pred)
+            
+            # 分析混淆矩阵
+            cm_analysis = self._analyze_confusion_matrix(cm, y_test_mapped, y_pred)
+            
+            # 收集指标
+            metrics = {
+                'position': position,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'log_loss': log_loss_value,
+                'confusion_matrix': cm.tolist(),
+                'confusion_analysis': cm_analysis
+            }
+            
+            red_metrics.append(metrics)
+            
+            self.log(f"红球位置{position}评估结果: 准确率={accuracy:.4f}, F1={f1:.4f}")
         
-        # 评估红球模型
-        if 'red' in self.models and isinstance(self.models['red'], list):
-            for i, (red_model, y_red_test_pos) in enumerate(zip(self.models['red'], y_red_test)):
-                red_preds = red_model.predict(X_test)
-                red_accuracy = accuracy_score(y_red_test_pos, red_preds)
-                red_accuracies.append(red_accuracy)
-                self.log(f"红球位置{i+1}模型准确率: {red_accuracy:.4f}")
+        # 计算红球平均指标
+        red_avg_metrics = {
+            'accuracy': np.mean([m['accuracy'] for m in red_metrics]),
+            'precision': np.mean([m['precision'] for m in red_metrics]),
+            'recall': np.mean([m['recall'] for m in red_metrics]),
+            'f1': np.mean([m['f1'] for m in red_metrics]),
+            'log_loss': np.mean([m['log_loss'] for m in red_metrics if m['log_loss'] != float('inf')])
+        }
+        
+        # 计算红球位置间的差异
+        red_position_variance = {
+            'accuracy': np.var([m['accuracy'] for m in red_metrics]),
+            'f1': np.var([m['f1'] for m in red_metrics])
+        }
+        
+        self.log(f"红球平均评估结果: 准确率={red_avg_metrics['accuracy']:.4f}, F1={red_avg_metrics['f1']:.4f}")
         
         # 评估蓝球模型
-        if 'blue' in self.models and isinstance(self.models['blue'], list):
-            for i, (blue_model, y_blue_test_pos) in enumerate(zip(self.models['blue'], y_blue_test)):
-                blue_preds = blue_model.predict(X_test)
-                blue_accuracy = accuracy_score(y_blue_test_pos, blue_preds)
-                blue_accuracies.append(blue_accuracy)
-                self.log(f"蓝球位置{i+1}模型准确率: {blue_accuracy:.4f}")
+        self.log("评估蓝球模型性能...")
+        blue_metrics = []
         
-        # 计算平均准确率
-        avg_red_accuracy = np.mean(red_accuracies) if red_accuracies else 0
-        avg_blue_accuracy = np.mean(blue_accuracies) if blue_accuracies else 0
+        for i, (model, y_test) in enumerate(zip(self.models['blue'], blue_test_data)):
+            position = i + 1
+            self.log(f"评估蓝球位置{position}模型...")
+            
+            # 预测
+            y_pred = model.predict(X_test)
+            y_pred_proba = model.predict_proba(X_test)
+            
+            # 应用标签映射
+            if hasattr(model.model, 'classes_'):
+                classes = model.model.classes_
+                y_test_mapped = np.array([np.where(classes == y)[0][0] if y in classes else -1 for y in y_test])
+                # 处理不在classes中的标签
+                y_test_mapped = np.array([y if y >= 0 else 0 for y in y_test_mapped])
+            else:
+                y_test_mapped = y_test
+            
+            # 计算评估指标
+            accuracy = accuracy_score(y_test_mapped, y_pred)
+            precision = precision_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            recall = recall_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            f1 = f1_score(y_test_mapped, y_pred, average='weighted', zero_division=0)
+            
+            # 计算对数损失
+            try:
+                log_loss_value = log_loss(y_test_mapped, y_pred_proba)
+            except ValueError:
+                log_loss_value = float('inf')
+            
+            # 计算混淆矩阵
+            cm = confusion_matrix(y_test_mapped, y_pred)
+            
+            # 分析混淆矩阵
+            cm_analysis = self._analyze_confusion_matrix(cm, y_test_mapped, y_pred)
+            
+            # 收集指标
+            metrics = {
+                'position': position,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'log_loss': log_loss_value,
+                'confusion_matrix': cm.tolist(),
+                'confusion_analysis': cm_analysis
+            }
+            
+            blue_metrics.append(metrics)
+            
+            self.log(f"蓝球位置{position}评估结果: 准确率={accuracy:.4f}, F1={f1:.4f}")
         
-        self.log(f"红球平均准确率: {avg_red_accuracy:.4f}")
-        self.log(f"蓝球平均准确率: {avg_blue_accuracy:.4f}")
+        # 计算蓝球平均指标
+        blue_avg_metrics = {
+            'accuracy': np.mean([m['accuracy'] for m in blue_metrics]),
+            'precision': np.mean([m['precision'] for m in blue_metrics]),
+            'recall': np.mean([m['recall'] for m in blue_metrics]),
+            'f1': np.mean([m['f1'] for m in blue_metrics]),
+            'log_loss': np.mean([m['log_loss'] for m in blue_metrics if m['log_loss'] != float('inf')])
+        }
         
-        return avg_red_accuracy, avg_blue_accuracy
+        # 计算蓝球位置间的差异
+        blue_position_variance = {
+            'accuracy': np.var([m['accuracy'] for m in blue_metrics]),
+            'f1': np.var([m['f1'] for m in blue_metrics])
+        }
+        
+        self.log(f"蓝球平均评估结果: 准确率={blue_avg_metrics['accuracy']:.4f}, F1={blue_avg_metrics['f1']:.4f}")
+        
+        # 返回评估结果
+        return {
+            'red_metrics': red_metrics,
+            'red_avg_metrics': red_avg_metrics,
+            'red_position_variance': red_position_variance,
+            'blue_metrics': blue_metrics,
+            'blue_avg_metrics': blue_avg_metrics,
+            'blue_position_variance': blue_position_variance
+        }
     
-    def save_models(self):
+    def _analyze_confusion_matrix(self, cm, y_true, y_pred):
+        """
+        分析混淆矩阵
+        
+        Args:
+            cm: 混淆矩阵
+            y_true: 真实标签
+            y_pred: 预测标签
+            
+        Returns:
+            混淆矩阵分析结果字典
+        """
+        # 找出最常混淆的类别对
+        n_classes = cm.shape[0]
+        confusion_pairs = []
+        
+        for i in range(n_classes):
+            for j in range(n_classes):
+                if i != j and cm[i, j] > 0:
+                    confusion_pairs.append(((i, j), cm[i, j]))
+        
+        # 按混淆次数排序
+        confusion_pairs.sort(key=lambda x: x[1], reverse=True)
+        
+        # 取前5个最常混淆的类别对
+        top_confusion_pairs = confusion_pairs[:5]
+        
+        # 计算每个类别的预测准确率
+        class_accuracy = {}
+        for i in range(n_classes):
+            if np.sum(cm[i, :]) > 0:
+                class_accuracy[i] = cm[i, i] / np.sum(cm[i, :])
+        
+        # 找出预测最准确和最不准确的类别
+        if class_accuracy:
+            most_accurate_class = max(class_accuracy.items(), key=lambda x: x[1])
+            least_accurate_class = min(class_accuracy.items(), key=lambda x: x[1])
+        else:
+            most_accurate_class = (0, 0)
+            least_accurate_class = (0, 0)
+        
+        return {
+            'top_confusion_pairs': top_confusion_pairs,
+            'most_accurate_class': most_accurate_class,
+            'least_accurate_class': least_accurate_class,
+            'class_accuracy': class_accuracy
+        }
+    
+    def save_models(self, red_train_results, blue_train_results, evaluation_results):
         """
         保存训练好的模型和缩放器
-        优化版本：支持位置模型格式和更详细的模型信息记录
+        支持位置模型格式
         
+        Args:
+            red_train_results: 红球训练结果
+            blue_train_results: 蓝球训练结果
+            evaluation_results: 评估结果
+            
         Returns:
-            bool: 是否成功保存模型
+            保存结果字典
         """
-        if not self.models:
-            self.log("没有训练好的模型可以保存")
-            return False
+        # 创建版本目录
+        timestamp = int(time.time())
+        version_dir = os.path.join(self.models_dir, f"v_{timestamp}")
+        os.makedirs(version_dir, exist_ok=True)
         
-        self.log(f"开始保存{self.lottery_type}的XGBoost模型...")
+        # 创建符号链接指向最新版本
+        latest_link = os.path.join(self.models_dir, "latest")
+        if os.path.exists(latest_link):
+            if os.path.islink(latest_link):
+                os.unlink(latest_link)
+            else:
+                os.remove(latest_link)
         
-        # 创建模型目录
-        model_dir = os.path.join(self.models_dir, self.model_type)
-        os.makedirs(model_dir, exist_ok=True)
+        # 在Windows上创建文本文件而不是符号链接
+        if platform.system() == "Windows":
+            with open(latest_link, "w") as f:
+                f.write(version_dir)
+        else:
+            os.symlink(version_dir, latest_link, target_is_directory=True)
         
         # 收集模型统计信息
-        model_stats = {}
-        for ball_type in ['red', 'blue']:
-            if ball_type in self.models:
-                models = self.models[ball_type]
-                if isinstance(models, list):
-                    # 位置模型统计
-                    model_stats[f'{ball_type}_model_type'] = 'position_models'
-                    model_stats[f'{ball_type}_model_count'] = len(models)
-                    # 收集每个位置模型的性能指标
-                    if hasattr(models[0], 'model') and hasattr(models[0].model, 'best_score_'):
-                        best_scores = [getattr(m.model, 'best_score_', 0) for m in models if hasattr(m.model, 'best_score_')]
-                        if best_scores:
-                            model_stats[f'{ball_type}_avg_score'] = sum(best_scores) / len(best_scores)
-                            model_stats[f'{ball_type}_best_score'] = max(best_scores)
-                else:
-                    # 单一模型统计
-                    model_stats[f'{ball_type}_model_type'] = 'single_model'
-                    if hasattr(models, 'model') and hasattr(models.model, 'best_score_'):
-                        model_stats[f'{ball_type}_best_score'] = models.model.best_score_
+        model_statistics = {
+            'red_count': len(red_train_results),
+            'blue_count': len(blue_train_results),
+            'red_avg_score': evaluation_results['red_avg_metrics']['accuracy'],
+            'blue_avg_score': evaluation_results['blue_avg_metrics']['accuracy'],
+            'red_avg_f1': evaluation_results['red_avg_metrics']['f1'],
+            'blue_avg_f1': evaluation_results['blue_avg_metrics']['f1'],
+            'red_best_params': [result['best_params'] for result in red_train_results],
+            'blue_best_params': [result['best_params'] for result in blue_train_results],
+            'red_feature_importance': [result['importance_analysis'] for result in red_train_results],
+            'blue_feature_importance': [result['importance_analysis'] for result in blue_train_results]
+        }
         
-        # 保存模型信息
+        # 收集环境信息
+        env_info = {
+            'python_version': platform.python_version(),
+            'xgboost_version': getattr(XGBClassifier, '__version__', 'unknown'),
+            'sklearn_version': getattr(train_test_split, '__version__', 'unknown'),
+            'numpy_version': np.__version__,
+            'pandas_version': pd.__version__,
+            'platform': platform.platform(),
+            'processor': platform.processor(),
+            'gpu_used': self.use_gpu
+        }
+        
+        # 创建模型信息
         model_info = {
             'model_type': self.model_type,
             'lottery_type': self.lottery_type,
             'feature_window': self.feature_window,
-            'red_count': self.red_count,
-            'blue_count': self.blue_count,
-            'red_range': self.red_range,
-            'blue_range': self.blue_range,
-            'created_time': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'model_version': '2.0',  # 升级版本号
-            'optimization_features': [
-                'position_based_prediction',
-                'probability_prediction',
-                'early_stopping',
-                'hyperparameter_tuning',
-                'regularization'
-            ],
-            'model_statistics': model_stats
+            'created_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'model_version': f"v_{timestamp}",
+            'model_id': str(uuid.uuid4()),
+            'model_statistics': model_statistics,
+            'environment_info': env_info,
+            'optimization_features': {
+                'parameter_tuning': True,
+                'early_stopping': True,
+                'feature_importance_analysis': True,
+                'overfit_detection': True,
+                'position_based_models': True
+            }
         }
         
-        info_path = os.path.join(model_dir, 'model_info.json')
-        try:
-            with open(info_path, 'w') as f:
-                json.dump(model_info, f, indent=2, ensure_ascii=False)
-            self.log(f"保存模型信息成功: {info_path}")
-        except Exception as e:
-            self.log(f"保存模型信息失败: {e}")
-            return False
+        # 保存模型信息
+        with open(os.path.join(version_dir, 'model_info.json'), 'w') as f:
+            json.dump(model_info, f, indent=2)
         
-        # 保存模型
-        models_saved = True
+        # 保存红球位置模型
+        for i, model in enumerate(self.models['red']):
+            model_path = os.path.join(version_dir, f'red_model_pos_{i+1}.pkl')
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
         
-        for ball_type in ['red', 'blue']:
-            if ball_type in self.models:
-                models = self.models[ball_type]
-                
-                if isinstance(models, list):
-                    # 保存位置模型（新格式）
-                    for i, model in enumerate(models):
-                        try:
-                            model_path = os.path.join(model_dir, f'{ball_type}_model_pos_{i+1}.pkl')
-                            with open(model_path, 'wb') as f:
-                                pickle.dump(model, f)
-                            self.log(f"保存{ball_type}球位置{i+1}模型成功")
-                        except Exception as e:
-                            self.log(f"保存{ball_type}球位置{i+1}模型失败: {e}")
-                            models_saved = False
-                else:
-                    # 保存单一模型（兼容旧格式）
-                    try:
-                        model_path = os.path.join(model_dir, f'{ball_type}_model.pkl')
-                        with open(model_path, 'wb') as f:
-                            pickle.dump(models, f)
-                        self.log(f"保存{ball_type}球模型成功: {model_path}")
-                    except Exception as e:
-                        self.log(f"保存{ball_type}球模型失败: {e}")
-                        models_saved = False
+        # 保存蓝球位置模型
+        for i, model in enumerate(self.models['blue']):
+            model_path = os.path.join(version_dir, f'blue_model_pos_{i+1}.pkl')
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
         
         # 保存特征缩放器
-        if 'X' in self.scalers:
-            try:
-                scaler_path = os.path.join(model_dir, 'scaler.pkl')
-                with open(scaler_path, 'wb') as f:
-                    pickle.dump(self.scalers['X'], f)
-                self.log(f"保存特征缩放器成功: {scaler_path}")
-            except Exception as e:
-                self.log(f"保存特征缩放器失败: {e}")
-                models_saved = False
+        for scaler_name, scaler in self.scalers.items():
+            scaler_path = os.path.join(version_dir, f'scaler_{scaler_name}.pkl')
+            with open(scaler_path, 'wb') as f:
+                pickle.dump(scaler, f)
         
-        if models_saved:
-            self.log(f"XGBoost模型保存成功: {model_dir}")
-            self.log(f"模型统计信息: {model_stats}")
-            return True
-        else:
-            self.log(f"XGBoost模型保存失败")
-            return False
+        # 保存特征名称列表
+        if hasattr(self, 'feature_cols') and self.feature_cols:
+            with open(os.path.join(version_dir, 'feature_names.json'), 'w') as f:
+                json.dump(self.feature_cols, f)
+        
+        self.log(f"模型已保存到: {version_dir}")
+        self.current_model_version = os.path.basename(version_dir)
+        
+        return {
+            'version_dir': version_dir,
+            'model_info': model_info
+        }
     
-    def load_models(self):
+    def load_models(self, version=None):
         """
-        加载保存的模型和缩放器
-        优化版本：支持新的位置模型格式和更好的错误处理
+        加载训练好的模型
+        支持加载指定版本或最新版本
         
+        Args:
+            version: 模型版本，如果为None则加载最新版本
+            
         Returns:
-            bool: 是否成功加载模型
+            是否加载成功
         """
-        self.log(f"尝试加载{self.lottery_type}的XGBoost模型...")
+        self.log(f"加载{self.lottery_type}的XGBoost模型...")
         
-        # 检查模型目录是否存在
-        model_dir = os.path.join(self.models_dir, self.model_type)
-        if not os.path.exists(model_dir):
-            self.log(f"模型目录不存在: {model_dir}")
+        # 确定模型目录
+        if version is None:
+            # 尝试加载最新版本
+            latest_link = os.path.join(self.models_dir, "latest")
+            if os.path.exists(latest_link):
+                if os.path.islink(latest_link):
+                    model_dir = os.readlink(latest_link)
+                else:
+                    # 在Windows上读取文本文件
+                    with open(latest_link, "r") as f:
+                        model_dir = f.read().strip()
+            else:
+                # 如果没有latest链接，查找最新的版本目录
+                model_dir = self._find_latest_version_dir(self.models_dir)
+        else:
+            # 加载指定版本
+            model_dir = os.path.join(self.models_dir, version)
+        
+        if model_dir is None or not os.path.exists(model_dir):
+            self.log(f"找不到模型目录: {model_dir}")
             return False
         
-        # 检查模型信息文件是否存在
-        info_path = os.path.join(model_dir, 'model_info.json')
-        if not os.path.exists(info_path):
-            self.log(f"模型信息文件不存在: {info_path}")
-            return False
+        self.log(f"从{model_dir}加载模型...")
         
         # 加载模型信息
-        try:
-            with open(info_path, 'r') as f:
-                model_info = json.load(f)
-            self.log(f"加载模型信息成功: {model_info}")
-            
-            # 更新模型参数
-            if 'feature_window' in model_info:
-                self.feature_window = model_info['feature_window']
-                self.log(f"更新特征窗口大小: {self.feature_window}")
-        except Exception as e:
-            self.log(f"加载模型信息失败: {e}")
-            return False
-        
-        # 加载特征缩放器（只需要加载一次）
-        scaler_loaded = False
-        scaler_path = os.path.join(model_dir, 'scaler.pkl')
-        if os.path.exists(scaler_path):
+        info_path = os.path.join(model_dir, 'model_info.json')
+        if os.path.exists(info_path):
             try:
-                with open(scaler_path, 'rb') as f:
-                    self.scalers['X'] = pickle.load(f)
-                self.log(f"加载特征缩放器成功")
-                scaler_loaded = True
+                with open(info_path, 'r') as f:
+                    model_info = json.load(f)
+                self.log(f"加载模型信息成功: {model_info['model_version']}")
             except Exception as e:
-                self.log(f"加载特征缩放器失败: {e}")
+                self.log(f"加载模型信息失败: {e}")
+                model_info = None
+        else:
+            self.log("模型信息文件不存在")
+            model_info = None
         
-        if not scaler_loaded:
-            self.log(f"警告: 特征缩放器文件不存在，将创建默认缩放器")
-            from sklearn.preprocessing import StandardScaler
-            self.scalers['X'] = StandardScaler()
+        # 加载特征名称列表
+        feature_names_path = os.path.join(model_dir, 'feature_names.json')
+        if os.path.exists(feature_names_path):
+            try:
+                with open(feature_names_path, 'r') as f:
+                    self.feature_cols = json.load(f)
+                self.log(f"加载特征名称列表成功，共{len(self.feature_cols)}个特征")
+            except Exception as e:
+                self.log(f"加载特征名称列表失败: {e}")
+        
+        # 加载特征缩放器
+        for scaler_name in ['X', 'red', 'blue']:
+            scaler_path = os.path.join(model_dir, f'scaler_{scaler_name}.pkl')
+            if os.path.exists(scaler_path):
+                try:
+                    with open(scaler_path, 'rb') as f:
+                        self.scalers[scaler_name] = pickle.load(f)
+                    self.log(f"加载{scaler_name}特征缩放器成功")
+                except Exception as e:
+                    self.log(f"加载{scaler_name}特征缩放器失败: {e}")
         
         # 加载模型
         models_loaded = True
@@ -558,38 +1042,117 @@ class XGBoostModel(BaseMLModel):
         # 判断加载结果
         if balls_loaded >= 2:  # 至少加载了红球和蓝球
             self.log(f"XGBoost模型加载成功，加载了{balls_loaded}种球类型的模型")
+            # 记录当前加载的模型版本
+            self.current_model_version = os.path.basename(model_dir)
             return True
         else:
             self.log(f"XGBoost模型加载失败，未找到必要的红球和蓝球模型")
             return False
     
-    def predict(self, recent_data, num_predictions=1):
+    def _find_latest_version_dir(self, base_dir):
         """
-        生成预测结果
-        优化版本：支持位置模型、概率预测和智能号码选择
+        查找最新的模型版本目录
+        
+        Args:
+            base_dir: 基础模型目录
+            
+        Returns:
+            最新版本的目录路径，如果没有找到则返回None
+        """
+        try:
+            # 查找所有以v_开头的目录
+            version_dirs = [d for d in os.listdir(base_dir) 
+                           if os.path.isdir(os.path.join(base_dir, d)) and d.startswith('v_')]
+            
+            if not version_dirs:
+                self.log(f"在{base_dir}中未找到任何版本目录")
+                # 尝试直接使用基础目录（兼容旧版本）
+                if os.path.exists(os.path.join(base_dir, 'model_info.json')):
+                    self.log(f"找到旧版本模型结构，将使用基础目录")
+                    return base_dir
+                return None
+            
+            # 按照版本号排序（实际上是按照时间戳排序）
+            version_dirs.sort(reverse=True)  # 降序排列，最新的在前面
+            latest_dir = os.path.join(base_dir, version_dirs[0])
+            self.log(f"找到最新的模型版本目录: {latest_dir}")
+            return latest_dir
+        except Exception as e:
+            self.log(f"查找最新版本目录时出错: {e}")
+            return None
+    
+    def list_available_versions(self):
+        """
+        列出所有可用的模型版本
+        
+        Returns:
+            版本信息列表，每个元素是一个字典，包含版本ID和创建时间
+        """
+        base_model_dir = os.path.join(self.models_dir, self.model_type)
+        if not os.path.exists(base_model_dir):
+            self.log(f"模型基础目录不存在: {base_model_dir}")
+            return []
+        
+        versions = []
+        try:
+            # 查找所有以v_开头的目录
+            version_dirs = [d for d in os.listdir(base_model_dir) 
+                           if os.path.isdir(os.path.join(base_model_dir, d)) and d.startswith('v_')]
+            
+            for v_dir in version_dirs:
+                info_path = os.path.join(base_model_dir, v_dir, 'model_info.json')
+                if os.path.exists(info_path):
+                    try:
+                        with open(info_path, 'r') as f:
+                            model_info = json.load(f)
+                        
+                        version_info = {
+                            'version_id': v_dir,
+                            'created_time': model_info.get('created_time', '未知'),
+                            'model_version': model_info.get('model_version', '未知'),
+                            'lottery_type': model_info.get('lottery_type', '未知')
+                        }
+                        
+                        # 添加性能指标（如果有）
+                        if 'model_statistics' in model_info:
+                            stats = model_info['model_statistics']
+                            if 'red_avg_score' in stats:
+                                version_info['red_score'] = stats['red_avg_score']
+                            if 'blue_avg_score' in stats:
+                                version_info['blue_score'] = stats['blue_avg_score']
+                        
+                        versions.append(version_info)
+                    except Exception as e:
+                        self.log(f"读取版本{v_dir}的信息时出错: {e}")
+            
+            # 按创建时间排序（降序）
+            versions.sort(key=lambda x: x.get('created_time', ''), reverse=True)
+            
+        except Exception as e:
+            self.log(f"列出可用版本时出错: {e}")
+        
+        return versions
+    
+    def prepare_features(self, recent_data):
+        """
+        从最近的开奖数据中提取预测所需的特征
         
         Args:
             recent_data: 包含最近开奖数据的DataFrame
-            num_predictions: 预测的组数
             
         Returns:
-            预测的红球和蓝球号码
+            处理后的特征数据，用于预测
         """
-        # 首先检查模型是否已加载
-        if 'red' not in self.models or 'blue' not in self.models:
-            # 尝试重新加载模型
-            self.log("模型未加载，尝试重新加载...")
-            load_success = self.load_models()
-            if not load_success:
-                self.log("错误：模型加载失败，请先训练模型")
-                raise ValueError(f"模型未正确加载，请先训练或加载模型。")
+        self.log("从最近数据中提取预测特征...")
         
-        # 确保模型已加载
-        if 'red' not in self.models or 'blue' not in self.models:
-            self.log("模型未加载，无法预测")
-            raise ValueError(f"模型未正确加载，请先训练或加载模型。")
+        # 设置特征窗口大小
+        window_size = self.feature_window
         
-        self.log(f"开始预测{num_predictions}组{self.lottery_type}彩票号码...")
+        # 确保数据按期数排序
+        if '期数' in recent_data.columns:
+            recent_data = recent_data.sort_values('期数').reset_index(drop=True)
+        else:
+            recent_data = recent_data.reset_index(drop=True)
         
         # 提取红蓝球列名
         if self.lottery_type == 'dlt':
@@ -598,314 +1161,302 @@ class XGBoostModel(BaseMLModel):
         else:  # ssq
             red_cols = [col for col in recent_data.columns if col.startswith('红球_')][:6]
             blue_cols = [col for col in recent_data.columns if col.startswith('蓝球_')][:1]
-            
-        # 确保数据按期数降序排列
-        recent_data = recent_data.sort_values('期数', ascending=False).reset_index(drop=True)
         
-        # 确保有足够的历史数据
-        if len(recent_data) < self.feature_window:
-            self.log(f"历史数据不足，需要至少 {self.feature_window} 期")
-            raise ValueError(f"历史数据不足，需要至少 {self.feature_window} 期数据。当前仅有 {len(recent_data)} 期。")
+        # 检查数据量是否足够
+        if len(recent_data) < window_size:
+            self.log(f"错误: 提供的数据量({len(recent_data)}行)小于特征窗口大小({window_size})")
+            return None
         
-        # 创建特征序列
-        X_data = []
-        
-        # 使用滑动窗口创建序列数据
+        # 创建特征
         features = []
-        for j in range(self.feature_window):
+        # 使用最近的window_size期数据作为特征
+        for j in range(window_size):
             row_features = []
+            idx = len(recent_data) - window_size + j
             for col in red_cols + blue_cols:
-                row_features.append(recent_data.iloc[j][col])
+                row_features.append(recent_data.iloc[idx][col])
             features.append(row_features)
-            
-        X_data.append(features)
         
-        # 转换为NumPy数组
-        X = np.array(X_data)
-        
-        # 重塑特征以适合模型
+        # 转换为NumPy数组并重塑
+        X = np.array([features])
         X_reshaped = X.reshape(X.shape[0], -1)
         
+        # 检查特征缩放器是否存在
+        if 'X' not in self.scalers:
+            self.log("警告: 特征缩放器不存在，尝试加载模型")
+            load_success = self.load_models()
+            if not load_success or 'X' not in self.scalers:
+                self.log("错误: 无法加载特征缩放器，无法进行预测")
+                return None
+        
         # 应用特征缩放
-        try:
-            if 'X' in self.scalers:
-                X_scaled = self.scalers['X'].transform(X_reshaped)
-                self.log("使用通用特征缩放器进行预测")
-            else:
-                # 回退到红球缩放器
-                X_scaled = self.scalers['red'].transform(X_reshaped)
-                self.log("使用红球特征缩放器进行预测")
-        except Exception as e:
-            self.log(f"应用特征缩放时出错: {e}")
-            self.log("使用未缩放的特征进行预测")
-            X_scaled = X_reshaped
+        X_scaled = self.scalers['X'].transform(X_reshaped)
         
-        predictions = []
+        return X_scaled
         
-        for i in range(num_predictions):
-            try:
-                # 预测红球
-                red_predictions = self._predict_balls('red', X_scaled)
-                
-                # 预测蓝球
-                blue_predictions = self._predict_balls('blue', X_scaled)
-                
-                # 组合预测结果
-                if red_predictions and blue_predictions:
-                    if num_predictions == 1:
-                        # 单组预测，返回原格式
-                        return red_predictions, blue_predictions
-                    else:
-                        # 多组预测，返回字典格式
-                        prediction = {
-                            'red': red_predictions,
-                            'blue': blue_predictions
-                        }
-                        predictions.append(prediction)
-                        self.log(f"第{i+1}组预测: 红球 {red_predictions}, 蓝球 {blue_predictions}")
-                else:
-                    self.log(f"第{i+1}组预测失败：缺少红球或蓝球预测")
-                    
-            except Exception as e:
-                self.log(f"第{i+1}组预测过程中出现错误: {e}")
-                continue
+    def predict(self, recent_data, num_predictions=1, position_based=True, top_k=10, use_probability=True):
+        """
+        生成预测结果
+        优化版本：支持位置模型、概率预测和智能号码选择
         
+        Args:
+            recent_data: 包含最近开奖数据的DataFrame
+            num_predictions: 预测的组数
+            position_based: 是否使用位置模型，默认为True
+            top_k: 每个位置考虑的候选号码数量
+            use_probability: 是否使用概率进行智能选择
+            
+        Returns:
+            预测的红球和蓝球号码，单组或多组
+        """
+        # 首先检查模型是否已加载
+        if 'red' not in self.models or 'blue' not in self.models:
+            # 尝试重新加载模型
+            self.log("模型未加载，尝试重新加载...")
+            load_success = self.load_models()
+            if not load_success:
+                self.log("错误：模型加载失败，请先训练模型")
+                raise ValueError("模型未正确加载，请先训练或加载模型")
+        
+        # 准备特征数据
+        self.log("准备预测特征...")
+        X_features = self.prepare_features(recent_data)
+        
+        # 检查特征是否准备成功
+        if X_features is None or len(X_features) == 0:
+            self.log("错误：特征准备失败")
+            raise ValueError("特征准备失败，无法进行预测")
+        
+        # 根据模型类型选择预测方法
+        if position_based and isinstance(self.models['red'], list) and isinstance(self.models['blue'], list):
+            self.log("使用位置模型进行预测...")
+            return self._predict_with_position_models(X_features, num_predictions, top_k, use_probability)
+        else:
+            self.log("使用传统模型进行预测...")
+            return self._predict_with_traditional_models(X_features, num_predictions, top_k, use_probability)
+    
+    def _predict_with_position_models(self, X_features, num_predictions=1, top_k=10, use_probability=True):
+        """
+        使用位置模型进行预测
+        
+        Args:
+            X_features: 特征数据
+            num_predictions: 预测的组数
+            top_k: 每个位置考虑的候选号码数量
+            use_probability: 是否使用概率进行智能选择
+            
+        Returns:
+            预测的红球和蓝球号码，单组或多组
+        """
+        # 获取红球和蓝球模型
+        red_models = self.models['red']
+        blue_models = self.models['blue']
+        
+        # 检查模型数量是否符合要求
+        if len(red_models) != self.red_count or len(blue_models) != self.blue_count:
+            self.log(f"警告：模型数量与要求不符，红球模型数量: {len(red_models)}，蓝球模型数量: {len(blue_models)}")
+        
+        # 存储每个位置的预测结果和概率
+        red_predictions = []
+        red_probabilities = []
+        blue_predictions = []
+        blue_probabilities = []
+        
+        # 预测红球
+        for i, model in enumerate(red_models):
+            position = i + 1
+            self.log(f"预测红球位置{position}...")
+            
+            # 获取top-k预测结果和概率
+            indices, probs = model.predict_top_k(X_features, k=top_k)
+            red_predictions.append(indices[0])  # 取第一个样本的预测结果
+            red_probabilities.append(probs[0])  # 取第一个样本的概率
+        
+        # 预测蓝球
+        for i, model in enumerate(blue_models):
+            position = i + 1
+            self.log(f"预测蓝球位置{position}...")
+            
+            # 获取top-k预测结果和概率
+            indices, probs = model.predict_top_k(X_features, k=top_k)
+            blue_predictions.append(indices[0])  # 取第一个样本的预测结果
+            blue_probabilities.append(probs[0])  # 取第一个样本的概率
+        
+        # 生成多组预测结果
+        all_predictions = []
+        for _ in range(num_predictions):
+            # 智能选择红球号码
+            red_balls = self._select_balls(
+                red_predictions, red_probabilities, 
+                count=self.red_count, max_value=self.red_range-1, 
+                use_probability=use_probability
+            )
+            
+            # 智能选择蓝球号码
+            blue_balls = self._select_balls(
+                blue_predictions, blue_probabilities, 
+                count=self.blue_count, max_value=self.blue_range-1, 
+                use_probability=use_probability
+            )
+            
+            # 添加到预测结果列表
+            all_predictions.append((red_balls, blue_balls))
+        
+        # 如果只需要一组预测，直接返回第一组
         if num_predictions == 1:
-            # 如果单组预测失败，返回空结果
-            return [], []
-        else:
-            self.log(f"预测完成，共生成{len(predictions)}组号码")
-            return predictions
+            return all_predictions[0]
+        
+        return all_predictions
     
-    def _predict_balls(self, ball_type: str, features: np.ndarray) -> List[int]:
+    def _predict_with_traditional_models(self, X_features, num_predictions=1, top_k=10, use_probability=True):
         """
-        预测指定类型的球号码
-        支持位置模型和单一模型两种格式
+        使用传统模型进行预测（非位置模型）
         
         Args:
-            ball_type: 球类型 ('red' 或 'blue')
-            features: 特征数据
+            X_features: 特征数据
+            num_predictions: 预测的组数
+            top_k: 考虑的候选号码数量
+            use_probability: 是否使用概率进行智能选择
             
         Returns:
-            List[int]: 预测的号码列表
+            预测的红球和蓝球号码，单组或多组
         """
-        if ball_type not in self.models:
-            self.log(f"未找到{ball_type}球模型")
-            return []
+        # 获取红球和蓝球模型
+        red_model = self.models['red']
+        blue_model = self.models['blue']
         
-        ball_count = self.red_count if ball_type == 'red' else self.blue_count
-        ball_range = self.red_range if ball_type == 'red' else self.blue_range
-        models = self.models[ball_type]
-        
-        # 检查是否为位置模型（列表格式）
-        if isinstance(models, list) and len(models) == ball_count:
-            # 位置模型预测
-            predictions = []
-            for pos, model in enumerate(models):
-                try:
-                    # 使用概率预测获取top-k候选
-                    if hasattr(model, 'predict_proba'):
-                        proba = model.predict_proba(features)[0]
-                        # 获取概率最高的前3个候选
-                        top_indices = np.argsort(proba)[-3:][::-1]
-                        # 转换为实际号码，考虑标签映射
-                        if hasattr(model.model, 'reverse_mapping'):
-                            candidates = [model.model.reverse_mapping.get(idx, idx) + 1 for idx in top_indices]
-                        else:
-                            candidates = [idx + 1 for idx in top_indices]
-                        # 确保在有效范围内
-                        candidates = [c for c in candidates if 1 <= c <= ball_range]
-                    else:
-                        # 普通预测
-                        pred = model.predict(features)[0]
-                        candidates = [max(1, min(int(pred) + 1, ball_range))]
-                    
-                    # 选择不重复的号码
-                    selected = None
-                    for candidate in candidates:
-                        if candidate not in predictions:
-                            selected = candidate
-                            break
-                    
-                    # 如果所有候选都重复，随机选择一个未使用的号码
-                    if selected is None:
-                        import random
-                        available = [n for n in range(1, ball_range + 1) if n not in predictions]
-                        if available:
-                            selected = random.choice(available)
-                        else:
-                            selected = candidates[0] if candidates else pos + 1  # 最后的选择
-                    
-                    predictions.append(selected)
-                    
-                except Exception as e:
-                    self.log(f"位置{pos+1}预测失败: {e}")
-                    # 随机选择一个未使用的号码作为备选
-                    import random
-                    available = [n for n in range(1, ball_range + 1) if n not in predictions]
-                    if available:
-                        predictions.append(random.choice(available))
-                    else:
-                        predictions.append((pos % ball_range) + 1)
-            
-            # 确保有足够的预测结果
-            while len(predictions) < ball_count:
-                import random
-                available = [n for n in range(1, ball_range + 1) if n not in predictions]
-                if available:
-                    predictions.append(random.choice(available))
-                else:
-                    break
-            
-            predictions.sort()
-            return predictions[:ball_count]
-        
+        # 预测红球
+        self.log("预测红球...")
+        if hasattr(red_model, 'predict_proba'):
+            red_proba = red_model.predict_proba(X_features)
+            # 获取概率最高的top_k个红球号码
+            red_indices = np.argsort(red_proba[0])[-top_k:]
+            red_probs = red_proba[0][red_indices]
+            # 按概率降序排列
+            sort_idx = np.argsort(red_probs)[::-1]
+            red_indices = red_indices[sort_idx]
+            red_probs = red_probs[sort_idx]
         else:
-            # 单一模型预测（旧格式）
-            try:
-                if hasattr(models, 'predict_proba'):
-                    # 使用概率预测
-                    proba = models.predict_proba(features)[0]
-                    # 获取概率最高的号码作为候选
-                    top_indices = np.argsort(proba)[-ball_count*2:][::-1]
-                    # 考虑标签映射
-                    if hasattr(models.model, 'reverse_mapping'):
-                        candidates = [models.model.reverse_mapping.get(idx, idx) + 1 for idx in top_indices]
-                    else:
-                        candidates = [idx + 1 for idx in top_indices]
-                    # 确保在有效范围内
-                    candidates = [c for c in candidates if 1 <= c <= ball_range]
-                else:
-                    # 普通预测
-                    pred = models.predict(features)
-                    candidates = [max(1, min(int(p) + 1, ball_range)) for p in pred]
-                
-                # 去重并选择
-                predictions = []
-                for candidate in candidates:
-                    if candidate not in predictions:
-                        predictions.append(candidate)
-                    if len(predictions) >= ball_count:
-                        break
-                
-                # 补充不足的号码
-                while len(predictions) < ball_count:
-                    import random
-                    candidate = random.randint(1, ball_range)
-                    if candidate not in predictions:
-                        predictions.append(candidate)
-                
-                predictions.sort()
-                return predictions[:ball_count]
-                
-            except Exception as e:
-                self.log(f"{ball_type}球预测失败: {e}")
-                # 返回随机号码作为备选
-                import random
-                return sorted(random.sample(range(1, ball_range + 1), ball_count))
-    
-    def evaluate_model_performance(self, X_test, y_test):
-        """
-        评估模型性能
-        优化版本：支持位置模型和详细的性能指标
+            # 如果模型不支持概率预测，使用简单预测
+            red_indices = np.array([red_model.predict(X_features)[0]])
+            red_probs = np.array([1.0])
         
-        Args:
-            X_test: 测试特征
-            y_test: 测试标签
-            
-        Returns:
-            dict: 性能评估结果
-        """
-        if not self.models:
-            self.log("模型未训练，无法评估性能")
-            return {}
+        # 预测蓝球
+        self.log("预测蓝球...")
+        if hasattr(blue_model, 'predict_proba'):
+            blue_proba = blue_model.predict_proba(X_features)
+            # 获取概率最高的top_k个蓝球号码
+            blue_indices = np.argsort(blue_proba[0])[-top_k:]
+            blue_probs = blue_proba[0][blue_indices]
+            # 按概率降序排列
+            sort_idx = np.argsort(blue_probs)[::-1]
+            blue_indices = blue_indices[sort_idx]
+            blue_probs = blue_probs[sort_idx]
+        else:
+            # 如果模型不支持概率预测，使用简单预测
+            blue_indices = np.array([blue_model.predict(X_features)[0]])
+            blue_probs = np.array([1.0])
         
-        self.log("开始评估模型性能...")
-        performance = {}
-        
-        for ball_type in ['red', 'blue']:
-            if ball_type not in self.models:
-                continue
-                
-            ball_count = self.red_count if ball_type == 'red' else self.blue_count
-            models = self.models[ball_type]
-            
-            if isinstance(models, list):
-                # 位置模型评估
-                position_scores = []
-                for i, model in enumerate(models):
-                    try:
-                        if i < len(y_test[ball_type]):
-                            y_true = y_test[ball_type][i]
-                            y_pred = model.predict(X_test)
-                            
-                            # 计算准确率
-                            accuracy = accuracy_score(y_true, y_pred)
-                            position_scores.append(accuracy)
-                            
-                            self.log(f"{ball_type}球位置{i+1}准确率: {accuracy:.4f}")
-                    except Exception as e:
-                        self.log(f"评估{ball_type}球位置{i+1}时出错: {e}")
-                        position_scores.append(0.0)
-                
-                performance[f'{ball_type}_position_scores'] = position_scores
-                performance[f'{ball_type}_avg_accuracy'] = np.mean(position_scores) if position_scores else 0.0
-                performance[f'{ball_type}_best_position'] = np.argmax(position_scores) + 1 if position_scores else 0
-                
+        # 生成多组预测结果
+        all_predictions = []
+        for _ in range(num_predictions):
+            # 从候选红球中选择self.red_count个
+            if use_probability and len(red_indices) > self.red_count:
+                # 根据概率加权选择
+                red_balls = np.random.choice(
+                    red_indices, size=self.red_count, replace=False, 
+                    p=red_probs/np.sum(red_probs)
+                )
+                # 排序
+                red_balls = np.sort(red_balls)
             else:
-                # 单一模型评估
-                try:
-                    y_true = y_test[ball_type][0] if isinstance(y_test[ball_type], list) else y_test[ball_type]
-                    y_pred = models.predict(X_test)
-                    
-                    accuracy = accuracy_score(y_true, y_pred)
-                    performance[f'{ball_type}_accuracy'] = accuracy
-                    
-                    # 如果支持概率预测，计算更多指标
-                    if hasattr(models, 'predict_proba'):
-                        y_proba = models.predict_proba(X_test)
-                        # 计算top-k准确率
-                        for k in [3, 5, 10]:
-                            top_k_acc = self._calculate_top_k_accuracy(y_true, y_proba, k)
-                            performance[f'{ball_type}_top_{k}_accuracy'] = top_k_acc
-                    
-                    self.log(f"{ball_type}球模型准确率: {accuracy:.4f}")
-                    
-                except Exception as e:
-                    self.log(f"评估{ball_type}球模型时出错: {e}")
-                    performance[f'{ball_type}_accuracy'] = 0.0
+                # 直接选择概率最高的几个
+                red_balls = red_indices[:self.red_count]
+                red_balls = np.sort(red_balls)
+            
+            # 从候选蓝球中选择self.blue_count个
+            if use_probability and len(blue_indices) > self.blue_count:
+                # 根据概率加权选择
+                blue_balls = np.random.choice(
+                    blue_indices, size=self.blue_count, replace=False, 
+                    p=blue_probs/np.sum(blue_probs)
+                )
+                # 排序
+                blue_balls = np.sort(blue_balls)
+            else:
+                # 直接选择概率最高的几个
+                blue_balls = blue_indices[:self.blue_count]
+                blue_balls = np.sort(blue_balls)
+            
+            # 添加到预测结果列表
+            all_predictions.append((red_balls, blue_balls))
         
-        # 计算整体性能
-        red_acc = performance.get('red_avg_accuracy', performance.get('red_accuracy', 0.0))
-        blue_acc = performance.get('blue_avg_accuracy', performance.get('blue_accuracy', 0.0))
-        performance['overall_accuracy'] = (red_acc + blue_acc) / 2
+        # 如果只需要一组预测，直接返回第一组
+        if num_predictions == 1:
+            return all_predictions[0]
         
-        self.log(f"模型整体性能评估完成，平均准确率: {performance['overall_accuracy']:.4f}")
-        return performance
+        return all_predictions
     
-    def _calculate_top_k_accuracy(self, y_true, y_proba, k):
+    def _select_balls(self, predictions, probabilities, count, max_value, use_probability=True):
         """
-        计算Top-K准确率
+        从候选号码中智能选择球号
         
         Args:
-            y_true: 真实标签
-            y_proba: 预测概率
-            k: Top-K的K值
+            predictions: 每个位置的候选号码列表
+            probabilities: 每个位置的候选号码概率列表
+            count: 需要选择的球数
+            max_value: 球号的最大值
+            use_probability: 是否使用概率进行选择
             
         Returns:
-            float: Top-K准确率
+            选择的球号列表，已排序
         """
-        try:
-            correct = 0
-            total = len(y_true)
-            
-            for i in range(total):
-                # 获取概率最高的k个预测
-                top_k_indices = np.argsort(y_proba[i])[-k:]
-                if y_true[i] in top_k_indices:
-                    correct += 1
-            
-            return correct / total if total > 0 else 0.0
-        except Exception as e:
-            self.log(f"计算Top-{k}准确率时出错: {e}")
-            return 0.0
+        # 创建候选号码池
+        candidates = set()
+        candidate_probs = {}
+        
+        # 将所有位置的候选号码添加到池中
+        for pos_idx, (pos_preds, pos_probs) in enumerate(zip(predictions, probabilities)):
+            for ball_idx, (ball, prob) in enumerate(zip(pos_preds, pos_probs)):
+                # 确保球号在有效范围内
+                if 0 <= ball <= max_value:
+                    candidates.add(ball)
+                    # 如果号码已存在，取最高概率
+                    if ball in candidate_probs:
+                        candidate_probs[ball] = max(candidate_probs[ball], prob)
+                    else:
+                        candidate_probs[ball] = prob
+        
+        # 转换为列表
+        candidates = list(candidates)
+        
+        # 如果候选号码不足，添加随机号码
+        if len(candidates) < count:
+            self.log(f"警告：候选号码不足，添加随机号码。当前候选数量: {len(candidates)}，需要: {count}")
+            # 找出缺失的号码
+            missing = set(range(max_value + 1)) - set(candidates)
+            # 随机选择缺失的号码
+            additional = np.random.choice(list(missing), size=min(count - len(candidates), len(missing)), replace=False)
+            candidates.extend(additional)
+            # 为新添加的号码分配较低的概率
+            min_prob = min(candidate_probs.values()) if candidate_probs else 0.1
+            for ball in additional:
+                candidate_probs[ball] = min_prob * 0.5
+        
+        # 选择球号
+        if use_probability and len(candidates) > count:
+            # 提取概率
+            probs = np.array([candidate_probs[ball] for ball in candidates])
+            # 归一化概率
+            probs = probs / np.sum(probs)
+            # 根据概率加权选择
+            selected = np.random.choice(candidates, size=count, replace=False, p=probs)
+        else:
+            # 按概率排序
+            candidates_with_probs = [(ball, candidate_probs[ball]) for ball in candidates]
+            candidates_with_probs.sort(key=lambda x: x[1], reverse=True)
+            # 选择概率最高的几个
+            selected = np.array([ball for ball, _ in candidates_with_probs[:count]])
+        
+        # 排序并返回
+        return np.sort(selected)

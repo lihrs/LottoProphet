@@ -261,10 +261,18 @@ class BaseMLModel:
                 value = max(0, min(value, self.red_range - 1))
                 red_labels.append(value)
             for col in blue_cols:
-                # 减1转换为0-based索引，并确保在有效范围内
-                value = df.iloc[i + window_size][col] - 1
-                # 确保蓝球值在有效范围内 [0, blue_range-1]
-                value = max(0, min(value, self.blue_range - 1))
+                # 获取原始值
+                original_value = df.iloc[i + window_size][col]
+                # 减1转换为0-based索引
+                value = original_value - 1
+                
+                # 检查蓝球值是否在有效范围内 [0, blue_range-1]
+                if value < 0 or value >= self.blue_range:
+                    self.log(f"警告: 蓝球原始值{original_value}(索引{value})超出范围[1-{self.blue_range}]，已调整为有效范围")
+                    # 修正到有效范围
+                    value = max(0, min(value, self.blue_range - 1))
+                    self.log(f"  - 已调整为: {value} (原始值对应: {value+1})")
+                
                 blue_labels.append(value)
             
             X_data.append(features)
@@ -314,8 +322,9 @@ class BaseMLModel:
         self.scalers['X'] = scaler
         
         # 分割训练集和测试集
+        # 不使用分层抽样，因为可能存在某些类别样本数量不足的情况
         X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
-            X_scaled, y_red, y_blue, test_size=test_size, random_state=42
+            X_scaled, y_red, y_blue, test_size=test_size, random_state=42, stratify=None
         )
         
         # 对于红球和蓝球，我们需要将多标签转换为单标签
