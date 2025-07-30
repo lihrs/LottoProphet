@@ -22,7 +22,7 @@ from scipy import stats
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold, StratifiedKFold
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, callback
 
 # 添加项目根目录到Python路径
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -243,13 +243,25 @@ class XGBoostModel(BaseMLModel):
             (model, train_result): 训练好的模型和训练结果
         """
         # 处理标签映射，确保标签是连续的0-based索引
-        unique_labels = np.unique(y_train)
-        label_mapping = {label: i for i, label in enumerate(unique_labels)}
+        # 获取训练数据中的唯一标签
+        unique_train_labels = np.unique(y_train)
+        unique_test_labels = np.unique(y_test)
+        all_unique_labels = np.unique(np.concatenate([unique_train_labels, unique_test_labels]))
+        
+        # 创建连续的标签映射：将实际标签映射到0, 1, 2, ..., n-1
+        label_mapping = {label: i for i, label in enumerate(sorted(all_unique_labels))}
         reverse_mapping = {i: label for label, i in label_mapping.items()}
         
-        # 应用标签映射
-        y_train_mapped = np.array([label_mapping.get(label, label) for label in y_train])
-        y_test_mapped = np.array([label_mapping.get(label, label) for label in y_test])
+        # 应用标签映射，确保标签是连续的
+        y_train_mapped = np.array([label_mapping[label] for label in y_train], dtype=int)
+        y_test_mapped = np.array([label_mapping[label] for label in y_test], dtype=int)
+        
+        # 确定映射后的标签范围
+        max_label_value = len(all_unique_labels) - 1
+        
+        self.log(f"原始标签范围: {sorted(all_unique_labels)}")
+        self.log(f"映射后标签范围: 0-{max_label_value}")
+        self.log(f"标签映射: {label_mapping}")
         
         # 检查标签是否在合理范围内
         if ball_type == 'red':
@@ -333,10 +345,14 @@ class XGBoostModel(BaseMLModel):
         adjusted_n_iter = max(adjusted_n_iter, 10)  # 至少10次
         
         # 创建基础XGBoost分类器
+        # 设置num_class参数确保XGBoost知道所有可能的类别数量
+        num_classes = max_label_value + 1
         if self.use_gpu:
-            base_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state)
+            base_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, 
+                                     eval_metric=['mlogloss', 'merror'], num_class=num_classes)
         else:
-            base_model = XGBClassifier(tree_method='hist', random_state=random_state)
+            base_model = XGBClassifier(tree_method='hist', random_state=random_state, 
+                                     eval_metric=['mlogloss', 'merror'], num_class=num_classes)
         
         # 设置交叉验证策略
         # 检查每个类别的样本数量，确保分层抽样可行
@@ -390,10 +406,15 @@ class XGBoostModel(BaseMLModel):
         self.log(f"最佳交叉验证分数: {best_score:.4f}")
         
         # 使用最佳参数创建模型
+        # 在模型初始化时设置eval_metric参数，而不是在fit方法中
+        # 设置num_class参数确保XGBoost知道所有可能的类别数量
+        num_classes = max_label_value + 1
         if self.use_gpu:
-            model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, **best_params)
+            model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, 
+                                eval_metric=['mlogloss', 'merror'], num_class=num_classes, **best_params)
         else:
-            model = XGBClassifier(tree_method='hist', random_state=random_state, **best_params)
+            model = XGBClassifier(tree_method='hist', random_state=random_state, 
+                                eval_metric=['mlogloss', 'merror'], num_class=num_classes, **best_params)
         
         # 分割训练集和验证集
         # 检查每个类别的样本数量，确保分层抽样可行
@@ -410,13 +431,45 @@ class XGBoostModel(BaseMLModel):
         
         # 训练最终模型，使用验证集进行早停
         train_start_time = time.time()
-        model.fit(
-            X_train_split, y_train_split,
-            eval_set=[(X_val, y_val)],
-            eval_metric=['mlogloss', 'merror'],
-            early_stopping_rounds=early_stopping_rounds,
-            verbose=False
-        )
+        # 尝试不同的早停实现方式
+        early_stop_success = False
+        
+        # 方法1: 尝试使用callbacks方式（XGBoost 1.6+）
+        try:
+            early_stop_callback = callback.EarlyStopping(rounds=early_stopping_rounds, save_best=True)
+            model.fit(
+                X_train_split, y_train_split,
+                eval_set=[(X_val, y_val)],
+                callbacks=[early_stop_callback],
+                verbose=False
+            )
+            early_stop_success = True
+            self.log(f"使用callbacks方式实现早停")
+        except (AttributeError, TypeError) as e:
+            self.log(f"callbacks方式不支持: {str(e)}")
+        
+        # 方法2: 如果callbacks不支持，尝试旧的early_stopping_rounds方式
+        if not early_stop_success:
+            try:
+                model.fit(
+                    X_train_split, y_train_split,
+                    eval_set=[(X_val, y_val)],
+                    early_stopping_rounds=early_stopping_rounds,
+                    verbose=False
+                )
+                early_stop_success = True
+                self.log(f"使用early_stopping_rounds参数实现早停")
+            except TypeError as e:
+                self.log(f"early_stopping_rounds参数不支持: {str(e)}")
+        
+        # 方法3: 如果都不支持，则不使用早停
+        if not early_stop_success:
+            self.log(f"警告: 当前XGBoost版本不支持早停功能，将使用完整训练")
+            model.fit(
+                X_train_split, y_train_split,
+                eval_set=[(X_val, y_val)],
+                verbose=False
+            )
         train_time = time.time() - train_start_time
         
         # 在测试集上评估模型
@@ -463,18 +516,40 @@ class XGBoostModel(BaseMLModel):
             
             # 创建调整后的模型
             if self.use_gpu:
-                adjusted_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, **adjusted_params)
+                adjusted_model = XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state, eval_metric=['mlogloss', 'merror'], **adjusted_params)
             else:
-                adjusted_model = XGBClassifier(tree_method='hist', random_state=random_state, **adjusted_params)
+                adjusted_model = XGBClassifier(tree_method='hist', random_state=random_state, eval_metric=['mlogloss', 'merror'], **adjusted_params)
             
-            # 训练调整后的模型
-            adjusted_model.fit(
-                X_train_split, y_train_split,
-                eval_set=[(X_val, y_val)],
-                eval_metric=['mlogloss', 'merror'],
-                early_stopping_rounds=early_stopping_rounds,
-                verbose=False
-            )
+            # 训练调整后的模型，使用兼容的早停方式
+            try:
+                # 方法1: 尝试使用新版本的callbacks方式
+                early_stop_callback = callback.EarlyStopping(rounds=early_stopping_rounds, save_best=True)
+                adjusted_model.fit(
+                    X_train_split, y_train_split,
+                    eval_set=[(X_val, y_val)],
+                    callbacks=[early_stop_callback],
+                    verbose=False
+                )
+                self.log(f"使用callbacks方式实现早停")
+            except Exception as e:
+                try:
+                    # 方法2: 如果callbacks不支持，尝试旧的early_stopping_rounds方式
+                    adjusted_model.fit(
+                        X_train_split, y_train_split,
+                        eval_set=[(X_val, y_val)],
+                        early_stopping_rounds=early_stopping_rounds,
+                        verbose=False
+                    )
+                    self.log(f"使用early_stopping_rounds参数实现早停")
+                except Exception as e2:
+                    # 方法3: 如果都不支持，则不使用早停
+                    self.log(f"callbacks方式不支持: {str(e)}")
+                    self.log(f"early_stopping_rounds参数不支持: {str(e2)}")
+                    self.log("警告: 当前XGBoost版本不支持早停功能，将使用完整训练")
+                    adjusted_model.fit(
+                        X_train_split, y_train_split,
+                        verbose=False
+                    )
             
             # 评估调整后的模型
             adjusted_train_score = adjusted_model.score(X_train, y_train_mapped)
