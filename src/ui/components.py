@@ -56,6 +56,7 @@ def create_main_tab(main_tab):
     
     model_label = QLabel("模型类型:")
     model_combo = QComboBox()
+    model_combo.setMinimumWidth(140)
 
     model_combo.addItem("LSTM-CRF (默认)")
 

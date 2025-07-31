@@ -30,6 +30,9 @@ from .ml_models import LotteryMLModels, WrappedGBDTModel, demo
 # 导出LSTM-CRF模型
 from .lstm_crf import LstmCRFModel as LSTMCRFModel
 
+# 导出LSTM-TimeStep模型
+from .lstm_timeStep import LSTMTimeStepModel
+
 __all__ = [
     # 基础模型接口
     'BaseLotteryModel',
@@ -46,6 +49,7 @@ __all__ = [
     'WrappedCatBoostModel',
     'EnsembleModel',
     'LSTMCRFModel',
+    'LSTMTimeStepModel',
     
     # 兼容层
     'LotteryMLModels',

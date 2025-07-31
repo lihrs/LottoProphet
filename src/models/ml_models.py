@@ -10,6 +10,7 @@ import logging
 from .base import BaseMLModel, MODEL_TYPES
 from .random_forest import RandomForestModel
 from .xgboost_model import XGBoostModel, WrappedXGBoostModel
+from .lstm_timeStep import LSTMTimeStepModel
 
 # 条件导入LightGBM和CatBoost
 try:
@@ -50,6 +51,9 @@ class LotteryMLModels(BaseMLModel):
         # 根据model_type选择具体模型类
         if model_type == 'random_forest':
             self.model = RandomForestModel(lottery_type, feature_window, log_callback, use_gpu)
+        elif model_type == 'lstm_timestep':
+            # 为LSTM模型设置适当的参数
+            self.model = LSTMTimeStepModel(lottery_type, feature_window, log_callback, use_gpu)
         elif model_type == 'xgboost':
             self.model = XGBoostModel(lottery_type, feature_window, log_callback, use_gpu)
         elif model_type == 'gbdt':

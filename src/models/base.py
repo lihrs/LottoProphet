@@ -47,6 +47,7 @@ except ImportError:
 
 # 定义支持的模型类型
 MODEL_TYPES = {
+    'lstm_timestep': 'LSTMTimeStep',
     'random_forest': '随机森林',
     'xgboost': 'XGBoost',
     'gbdt': '梯度提升树',
