@@ -90,7 +90,7 @@ class LotteryMLModels(BaseMLModel):
         if self.model_type == 'expected_value':
             self.log("Expected value model does not require training.")
             return None
-        return self.model.train(df)
+        return self.model.fit(df)
     
     def predict(self, recent_data):
         """

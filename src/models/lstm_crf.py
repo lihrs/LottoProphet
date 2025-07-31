@@ -341,7 +341,7 @@ class LstmCRFModel(BaseLotteryModel, nn.Module):
             # Inference mode: return predicted sequences
             return self.crf.decode(emissions, mask=mask)
             
-    def train(self, data: Any, **kwargs) -> None:
+    def fit(self, data: Any, **kwargs) -> None:
         """
         Train the LSTM-CRF model
         
