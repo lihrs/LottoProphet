@@ -213,8 +213,8 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
     """
     
     def __init__(self, lottery_type='dlt', feature_window=15, log_callback=None, use_gpu=False,
-                 hidden_size=256, num_layers=3, dropout=0.2, bidirectional=True,
-                 use_attention=True, learning_rate=0.0005, weight_decay=1e-4):
+                 hidden_size=512, num_layers=4, dropout=0.2, bidirectional=True,
+                 use_attention=True, learning_rate=0.001, weight_decay=1e-4):
         """
         初始化高级LSTM TimeStep模型
         """
@@ -261,7 +261,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         )
         
         # 损失函数
-        self.criterion = LotteryLoss(alpha=0.7, beta=0.3)
+        self.criterion = LotteryLoss(alpha=0.8, beta=0.2)
         
         # 训练状态
         self.training_history = {'loss': [], 'red_accuracy': [], 'blue_accuracy': []}
@@ -318,7 +318,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         self.global_feature_extractor = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
-            nn.Linear(lstm_output_size, lstm_output_size // 2),
+            nn.Linear(lstm_output_size, lstm_output_size),
             nn.GELU(),
             nn.Dropout(self.dropout)
         )
@@ -345,7 +345,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         sequence_features = fused_features[:, -1, :]
         
         # 组合特征
-        combined_features = sequence_features + global_features.unsqueeze(1).expand(-1, sequence_features.size(1))
+        combined_features = sequence_features + global_features
         
         # 多头预测
         red_outputs = [head(combined_features) for head in self.red_heads]
@@ -389,19 +389,21 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
         return red_freq.to(self.device), blue_freq.to(self.device)
     
-    def fit(self, data, epochs=200, batch_size=64, validation_split=0.2, 
-            early_stopping_patience=25, **kwargs):
+    def fit(self, data, epochs=500, batch_size=64, validation_split=0.2, 
+            early_stopping_patience=50, **kwargs):
         """
         训练模型
         """
         self.log(f"开始训练高级LSTM TimeStep模型，彩票类型: {self.lottery_type}")
         self.log(f"优化参数: hidden_size={self.hidden_size}, num_layers={self.num_layers}")
         self.log(f"训练参数: epochs={epochs}, batch_size={batch_size}, lr={self.learning_rate}")
+        self.log(f"训练数据: {data}")
         
         try:
             # 计算历史频率
             self.red_freq, self.blue_freq = self._compute_historical_frequency(data)
-            
+            self.log(f"红球频率: {self.red_freq}")
+            self.log(f"蓝球频率: {self.blue_freq}")
             # 准备数据
             X_train, X_val, red_train_data, red_val_data, blue_train_data, blue_val_data = self.prepare_data(
                 data, test_size=validation_split
@@ -636,13 +638,13 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 
                 # 红球预测（使用温度采样增加多样性）
                 for red_logit in outputs['red_logits']:
-                    probabilities = F.softmax(red_logit / 1.2, dim=1)  # 温度采样
+                    probabilities = F.softmax(red_logit / 1.0, dim=1)  # 温度采样
                     predicted = torch.multinomial(probabilities, 1).squeeze().item()
                     red_numbers.append(predicted + 1)
                 
                 # 蓝球预测
                 for blue_logit in outputs['blue_logits']:
-                    probabilities = F.softmax(blue_logit / 1.2, dim=1)
+                    probabilities = F.softmax(blue_logit / 1.0, dim=1)
                     predicted = torch.multinomial(probabilities, 1).squeeze().item()
                     blue_numbers.append(predicted + 1)
                 
