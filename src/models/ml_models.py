@@ -5,6 +5,7 @@
 """
 
 import logging
+import torch.nn as nn
 
 # 导入所有拆分后的模型类
 from .base import BaseMLModel, MODEL_TYPES
@@ -90,7 +91,17 @@ class LotteryMLModels(BaseMLModel):
         if self.model_type == 'expected_value':
             self.log("Expected value model does not require training.")
             return None
-        return self.model.fit(df)
+        
+        # 调用具体模型的训练方法
+        # 对于PyTorch模型（如LSTM），使用fit方法而不是train方法
+        # 因为nn.Module的train方法用于设置训练模式，不是用于训练
+        if hasattr(self.model, 'fit'):
+            return self.model.fit(df)
+        elif hasattr(self.model, 'train') and not isinstance(self.model, nn.Module):
+            # 只有非PyTorch模型才调用train方法
+            return self.model.train(df)
+        else:
+            raise AttributeError(f"Model {type(self.model).__name__} has no suitable training method")
     
     def predict(self, recent_data):
         """
