@@ -919,6 +919,10 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 # 确保红球号码唯一，同时更新置信度
                 red_numbers, red_confidences = self._ensure_unique_red_numbers_with_confidence(red_numbers, red_confidences)
                 
+                # 对红球和蓝球号码进行排序（从小到大）
+                red_numbers.sort()
+                blue_numbers.sort()
+                
                 predictions.append((red_numbers, blue_numbers))
                 all_confidences.append((red_confidences, blue_confidences))
                 all_red_probs.append(batch_red_probs)
