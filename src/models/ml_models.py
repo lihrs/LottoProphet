@@ -115,7 +115,7 @@ class LotteryMLModels(BaseMLModel):
         """
         if self.model_type == 'expected_value':
             # 特殊处理expected_value模型
-            from src.core.expected_value import ExpectedValueLotteryModel
+            from core.expected_value import ExpectedValueLotteryModel
             ev_model = ExpectedValueLotteryModel(self.lottery_type)
             return ev_model.predict()
         return self.model.predict(recent_data)

@@ -542,7 +542,7 @@ class ExpectedValueLotteryModel:
         }
 
 if __name__ == "__main__":
-    from src.data.analysis import load_lottery_data
+    from data.analysis import load_lottery_data
     
     lottery_type = 'ssq'  # 或 'dlt'
     df = load_lottery_data(lottery_type)

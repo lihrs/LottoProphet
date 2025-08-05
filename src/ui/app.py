@@ -376,7 +376,7 @@ class LotteryPredictorApp(QMainWindow):
                         self.log_emitter.new_log.emit(f"检查期望值模型文件...")
                         
                         # 检查期望值模型目录
-                        from src.core.expected_value import ExpectedValueLotteryModel
+                        from core.expected_value import ExpectedValueLotteryModel
                         
                         # 直接创建期望值模型实例
                         ev_model = ExpectedValueLotteryModel(

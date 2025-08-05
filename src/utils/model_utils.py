@@ -6,7 +6,7 @@ import os
 import torch
 import joblib
 import numpy as np
-from src.core.model import LstmCRFModel
+from core.model import LstmCRFModel
 
 # 模型和路径配置
 name_path = {

@@ -41,7 +41,9 @@ def main():
         sys.exit(1)
         
     except Exception as e:
+        import traceback
         logger.error(f"An unexpected error occurred: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         sys.exit(1)
         
     logger.info("LottoProphet application finished.")

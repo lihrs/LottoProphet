@@ -5,6 +5,7 @@ Advanced LSTM TimeStep model implementation for lottery prediction
 """
 
 import os
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,7 +15,7 @@ import matplotlib.pyplot as plt
 import datetime
 from typing import Optional, Tuple, List, Any, Dict
 from .base import BaseMLModel
-from src.utils.device_utils import check_device_availability
+from utils.device_utils import check_device_availability
 import math
 
 # 添加项目根目录到Python路径

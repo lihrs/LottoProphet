@@ -23,7 +23,7 @@ project_dir = os.path.dirname(os.path.dirname(script_dir))
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 
-from src.utils.device_utils import check_device_availability
+from utils.device_utils import check_device_availability
 
 # 尝试导入可选的模型库
 try:
@@ -40,7 +40,7 @@ except ImportError:
 
 # 导入期望值模型
 try:
-    from src.core.expected_value import ExpectedValueLotteryModel
+    from core.expected_value import ExpectedValueLotteryModel
     EXPECTED_VALUE_MODEL_AVAILABLE = True
 except ImportError:
     EXPECTED_VALUE_MODEL_AVAILABLE = False
