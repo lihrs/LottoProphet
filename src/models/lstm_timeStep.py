@@ -799,9 +799,42 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 else:
                     # 处理输入数据
                     if hasattr(recent_data, 'values'):
-                        X_train, X_test, _, _, _, _ = self.prepare_data(recent_data)
-                        X_all = np.vstack([X_train, X_test]) if len(X_test) > 0 else X_train
-                        input_data = X_all[-1:].reshape(1, self.feature_window, self.input_size)
+                        # 直接处理数据，不进行训练测试分割
+                        df = recent_data.sort_values('期数').reset_index(drop=True)
+                        
+                        # 提取红蓝球列名
+                        if self.lottery_type == 'dlt':
+                            red_cols = [col for col in df.columns if col.startswith('红球_')][:5]
+                            blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:2]
+                        else:  # ssq
+                            red_cols = [col for col in df.columns if col.startswith('红球_')][:6]
+                            blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:1]
+                        
+                        # 检查数据量是否足够
+                        if len(df) < self.feature_window:
+                            raise ValueError(f"预测需要至少{self.feature_window}期历史数据，当前只有{len(df)}期")
+                        
+                        # 使用最后feature_window期数据作为特征
+                        features = []
+                        for j in range(self.feature_window):
+                            row_features = []
+                            for col in red_cols + blue_cols:
+                                row_features.append(df.iloc[-(self.feature_window-j)][col])
+                            features.append(row_features)
+                        
+                        # 转换为numpy数组并标准化
+                        X_data = np.array([features])
+                        X_reshaped = X_data.reshape(X_data.shape[0], -1)
+                        
+                        # 使用保存的缩放器进行标准化
+                        if hasattr(self, 'scalers') and 'X' in self.scalers:
+                            X_scaled = self.scalers['X'].transform(X_reshaped)
+                        else:
+                            # 如果没有缩放器，直接使用原始数据
+                            X_scaled = X_reshaped
+                            self.log("警告: 未找到特征缩放器，使用原始数据进行预测")
+                        
+                        input_data = X_scaled.reshape(1, self.feature_window, self.input_size)
                     else:
                         input_data = recent_data
                 
@@ -1037,7 +1070,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 self.log(f"模型文件不存在: {filepath}")
                 return False
                 
-            model_data = torch.load(filepath, map_location=self.device)
+            model_data = torch.load(filepath, map_location=self.device, weights_only=False)
             
             # 检查模型参数是否匹配
             params = model_data['model_params']

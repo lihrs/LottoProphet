@@ -409,7 +409,11 @@ class LotteryPredictorApp(QMainWindow):
                     self.log_emitter.new_log.emit(f"模型重新加载完成")
                 
                 df = load_lottery_data(lottery_type)
-                recent_data = df.sort_values('期数', ascending=False).head(ml_model.feature_window)
+                # 确保有足够的数据进行预测，至少需要 feature_window + 1 行数据
+                min_required_rows = ml_model.feature_window + 1
+                if len(df) < min_required_rows:
+                    raise ValueError(f"数据不足，需要至少 {min_required_rows} 行数据，当前只有 {len(df)} 行")
+                recent_data = df.sort_values('期数', ascending=False).head(min_required_rows)
                 
                 for i in range(num_predictions):
                     try:
@@ -1242,7 +1246,12 @@ def predict_next_draw(lottery_type, model_type, num_predictions=5):
         
         # 加载近期数据用于预测
         df = load_lottery_data(lottery_type)
-        recent_data = df.sort_values('期数', ascending=False).head(ml_model.feature_window)
+        # 确保有足够的数据进行预测，至少需要 feature_window + 1 行数据
+        min_required_rows = ml_model.feature_window + 1
+        if len(df) < min_required_rows:
+            print(f"数据不足，需要至少 {min_required_rows} 行数据，当前只有 {len(df)} 行")
+            return None
+        recent_data = df.sort_values('期数', ascending=False).head(min_required_rows)
         
         # 结果列表
         results = []

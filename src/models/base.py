@@ -324,38 +324,71 @@ class BaseMLModel:
         
         # 分割训练集和测试集
         # 不使用分层抽样，因为可能存在某些类别样本数量不足的情况
-        X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
-            X_scaled, y_red, y_blue, test_size=test_size, random_state=42, stratify=None
-        )
+        if test_size == 0 or len(X_scaled) == 1:
+            # 如果test_size为0或只有一个样本，不进行分割
+            X_train, X_test = X_scaled, np.array([])
+            y_red_train, y_red_test = y_red, np.array([])
+            y_blue_train, y_blue_test = y_blue, np.array([])
+        else:
+            # 检查是否有足够的样本进行分割
+            if len(X_scaled) * test_size < 1:
+                self.log(f"警告: 数据量({len(X_scaled)})太少，无法按test_size={test_size}进行分割，将不进行测试集分割")
+                X_train, X_test = X_scaled, np.array([])
+                y_red_train, y_red_test = y_red, np.array([])
+                y_blue_train, y_blue_test = y_blue, np.array([])
+            else:
+                X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test = train_test_split(
+                    X_scaled, y_red, y_blue, test_size=test_size, random_state=42, stratify=None
+                )
         
         # 对于红球和蓝球，我们需要将多标签转换为单标签
         # 例如，对于红球，我们有5个标签，每个标签表示一个位置的号码
         # 我们需要将其转换为5个独立的分类问题
         
         # 红球
-        if y_red_train.shape[1] > 1:
+        if len(y_red_train) > 0 and y_red_train.shape[1] > 1:
             # 多个红球位置，需要分别处理每个位置
             red_train_data = []
             red_test_data = []
             for i in range(y_red_train.shape[1]):
                 red_train_data.append(y_red_train[:, i].astype(np.int32))
-                red_test_data.append(y_red_test[:, i].astype(np.int32))
+                if len(y_red_test) > 0:
+                    red_test_data.append(y_red_test[:, i].astype(np.int32))
+                else:
+                    red_test_data.append(np.array([], dtype=np.int32))
         else:
-            # 只有一个红球位置
-            red_train_data = [y_red_train.flatten().astype(np.int32)]
-            red_test_data = [y_red_test.flatten().astype(np.int32)]
+            # 只有一个红球位置或空数据
+            if len(y_red_train) > 0:
+                red_train_data = [y_red_train.flatten().astype(np.int32)]
+            else:
+                red_train_data = [np.array([], dtype=np.int32)]
+            
+            if len(y_red_test) > 0:
+                red_test_data = [y_red_test.flatten().astype(np.int32)]
+            else:
+                red_test_data = [np.array([], dtype=np.int32)]
         
         # 蓝球
-        if y_blue_train.shape[1] > 1:
+        if len(y_blue_train) > 0 and y_blue_train.shape[1] > 1:
             # 多个蓝球位置，需要分别处理每个位置
             blue_train_data = []
             blue_test_data = []
             for i in range(y_blue_train.shape[1]):
                 blue_train_data.append(y_blue_train[:, i].astype(np.int32))
-                blue_test_data.append(y_blue_test[:, i].astype(np.int32))
+                if len(y_blue_test) > 0:
+                    blue_test_data.append(y_blue_test[:, i].astype(np.int32))
+                else:
+                    blue_test_data.append(np.array([], dtype=np.int32))
         else:
-            # 只有一个蓝球位置
-            blue_train_data = [y_blue_train.flatten().astype(np.int32)]
-            blue_test_data = [y_blue_test.flatten().astype(np.int32)]
+            # 只有一个蓝球位置或空数据
+            if len(y_blue_train) > 0:
+                blue_train_data = [y_blue_train.flatten().astype(np.int32)]
+            else:
+                blue_train_data = [np.array([], dtype=np.int32)]
+            
+            if len(y_blue_test) > 0:
+                blue_test_data = [y_blue_test.flatten().astype(np.int32)]
+            else:
+                blue_test_data = [np.array([], dtype=np.int32)]
         
         return X_train, X_test, red_train_data, red_test_data, blue_train_data, blue_test_data
