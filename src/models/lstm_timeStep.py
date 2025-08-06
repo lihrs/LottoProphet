@@ -402,11 +402,33 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         """
         前向传播 - 简化版实现
         """
-        batch_size, seq_len, _ = x.shape
+        batch_size, seq_len, feature_dim = x.shape
+        
+        # 确保输入特征维度与模型期望的输入维度匹配
+        if feature_dim != self.input_size:
+            self.log(f"警告: 输入特征维度 {feature_dim} 与模型期望的输入维度 {self.input_size} 不匹配")
+            # 动态调整input_size以匹配实际输入
+            self.input_size = feature_dim
+            
+            # 重新创建输入嵌入层的第一个线性层以匹配新的输入维度
+            old_embedding = self.input_embedding
+            self.input_embedding = nn.Sequential(
+                nn.Linear(self.input_size, self.hidden_size),
+                old_embedding[1],  # 保留原有的BatchNorm1d
+                old_embedding[2],  # 保留原有的ReLU
+                old_embedding[3]   # 保留原有的Dropout
+            )
+            # 将新层移动到正确的设备上
+            self.input_embedding = self.input_embedding.to(self.device)
         
         # 输入嵌入 - 处理批归一化需要的维度转换
         x_reshaped = x.reshape(-1, self.input_size)
-        embedded = self.input_embedding(x_reshaped)
+        # 先通过线性层
+        linear_out = self.input_embedding[0](x_reshaped)
+        # 然后通过批归一化层
+        bn_out = self.input_embedding[1](linear_out)
+        # 再通过激活函数和dropout
+        embedded = self.input_embedding[3](self.input_embedding[2](bn_out))
         embedded = embedded.reshape(batch_size, seq_len, self.hidden_size)
         
         # LSTM处理
@@ -742,7 +764,51 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         准备序列数据
         """
         samples = X.shape[0]
-        return X.reshape(samples, self.feature_window, self.input_size)
+        
+        # 检查输入数据的形状
+        if len(X.shape) == 3:
+            # 如果已经是三维数组，检查第二维和第三维是否符合预期
+            if X.shape[1] == self.feature_window and X.shape[2] == self.input_size:
+                return X
+            elif X.shape[1] == self.feature_window:
+                # 第三维不匹配，可能是特征数量不一致
+                # 注意：这里不更新input_size和input_embedding，因为这些会在forward方法中处理
+                # 这样可以避免重复更新
+                return X
+            else:
+                # 尝试重塑数据
+                total_elements = X.size
+                expected_elements = samples * self.feature_window * self.input_size
+                if total_elements != expected_elements:
+                    self.log(f"错误: 无法将形状为 {X.shape} 的数组重塑为 ({samples}, {self.feature_window}, {self.input_size})")
+                    self.log(f"数组大小: {total_elements}, 预期大小: {expected_elements}")
+                    # 尝试计算合适的维度
+                    if total_elements % (samples * self.feature_window) == 0:
+                        new_input_size = total_elements // (samples * self.feature_window)
+                        self.log(f"调整input_size为: {new_input_size}")
+                        # 注意：这里不更新input_size和input_embedding，因为这些会在forward方法中处理
+                        return X.reshape(samples, self.feature_window, new_input_size)
+                    else:
+                        raise ValueError(f"无法重塑数组: 大小 {total_elements} 不能被 {samples}*{self.feature_window} 整除")
+                return X.reshape(samples, self.feature_window, self.input_size)
+        elif len(X.shape) == 2:
+            # 如果是二维数组，尝试重塑为三维
+            total_elements = X.size
+            expected_elements = samples * self.feature_window * self.input_size
+            if total_elements != expected_elements:
+                self.log(f"错误: 无法将形状为 {X.shape} 的数组重塑为 ({samples}, {self.feature_window}, {self.input_size})")
+                self.log(f"数组大小: {total_elements}, 预期大小: {expected_elements}")
+                # 尝试计算合适的维度
+                if total_elements % (samples * self.feature_window) == 0:
+                    new_input_size = total_elements // (samples * self.feature_window)
+                    self.log(f"调整input_size为: {new_input_size}")
+                    # 注意：这里不更新input_size和input_embedding，因为这些会在forward方法中处理
+                    return X.reshape(samples, self.feature_window, new_input_size)
+                else:
+                    raise ValueError(f"无法重塑数组: 大小 {total_elements} 不能被 {samples}*{self.feature_window} 整除")
+            return X.reshape(samples, self.feature_window, self.input_size)
+        else:
+            raise ValueError(f"不支持的输入数据形状: {X.shape}")
     
     def _train_epoch(self, train_loader):
         """
