@@ -10,9 +10,16 @@ from .base import BaseLotteryModel
 
 # 添加安全的全局变量，以允许numpy._core.multiarray._reconstruct
 try:
-    torch.serialization.add_safe_globals(['numpy._core.multiarray._reconstruct'])
-except (AttributeError, ImportError):
+    # 尝试添加numpy相关的安全全局变量
+    torch.serialization.add_safe_globals([
+        'numpy._core.multiarray._reconstruct',
+        'numpy.core.multiarray._reconstruct',
+        'numpy._core._multiarray_umath',
+        'numpy.core._multiarray_umath'
+    ])
+except (AttributeError, ImportError) as e:
     # 兼容旧版PyTorch
+    print(f"注意: 无法添加numpy安全全局变量: {str(e)}")
     pass
 
 

@@ -581,12 +581,12 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             raise ValueError(f"训练数据为空，无法继续训练。请确保数据集大小大于特征窗口大小({window_size})。")
         
         # 验证标签范围
-        if len(y_red) > 0:
+        if len(y_red) > 0 and y_red.size > 0:
             self.log(f"红球标签范围: {np.min(y_red)} - {np.max(y_red)}, 预期范围: 0 - {self.red_range-1}")
         else:
             self.log("警告: 红球标签数组为空，无法计算范围")
             
-        if len(y_blue) > 0:
+        if len(y_blue) > 0 and y_blue.size > 0:
             self.log(f"蓝球标签范围: {np.min(y_blue)} - {np.max(y_blue)}, 预期范围: 0 - {self.blue_range-1}")
         else:
             self.log("警告: 蓝球标签数组为空，无法计算范围")
