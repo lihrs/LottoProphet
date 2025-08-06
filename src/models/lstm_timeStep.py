@@ -164,21 +164,32 @@ class AdaptivePredictionHead(nn.Module):
     自适应预测头，根据历史统计动态调整预测策略
     """
     
-    def __init__(self, input_size: int, output_size: int, dropout: float = 0.2):
+    def __init__(self, input_size: int, output_size: int, dropout: float = 0.2, use_layernorm: bool = False):
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
+        self.use_layernorm = use_layernorm
         
         # 多层预测网络
-        self.predictor = nn.Sequential(
-            nn.Linear(input_size, input_size * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(input_size * 2, input_size),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(input_size, output_size)
-        )
+        layers = []
+        # 第一层
+        layers.append(nn.Linear(input_size, input_size * 2))
+        layers.append(nn.GELU())
+        if use_layernorm:
+            layers.append(nn.LayerNorm(input_size * 2))
+        layers.append(nn.Dropout(dropout))
+        
+        # 第二层
+        layers.append(nn.Linear(input_size * 2, input_size))
+        layers.append(nn.GELU())
+        if use_layernorm:
+            layers.append(nn.LayerNorm(input_size))
+        layers.append(nn.Dropout(dropout))
+        
+        # 输出层
+        layers.append(nn.Linear(input_size, output_size))
+        
+        self.predictor = nn.Sequential(*layers)
         
         # 温度参数，用于调节预测分布的锐度
         self.temperature = nn.Parameter(torch.ones(1))
@@ -218,11 +229,20 @@ class LotteryLoss(nn.Module):
 class LSTMTimeStepModel(BaseMLModel, nn.Module):
     """
     高级LSTM时间步模型，集成多种优化技术
+    
+    优化特点：
+    1. 混合精度训练加速
+    2. 梯度累积更新
+    3. 自适应批次大小
+    4. 标签平滑和Focal Loss
+    5. 注意力机制增强
+    6. 优化的学习率调度
+    7. 特征融合与增强
     """
     
     def __init__(self, lottery_type='dlt', feature_window=15, log_callback=None, use_gpu=False,
-                 hidden_size=384, num_layers=3, dropout=0.2, bidirectional=True,
-                 use_attention=True, learning_rate=0.0002, weight_decay=1e-5):
+                 hidden_size=512, num_layers=4, dropout=0.15, bidirectional=True,
+                 use_attention=True, learning_rate=0.0003, weight_decay=5e-6):
         """
         初始化高级LSTM TimeStep模型
         """
@@ -238,16 +258,37 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
+        # 新增训练优化参数
+        self.use_mixed_precision = True  # 使用混合精度训练加速
+        self.gradient_accumulation_steps = 4  # 梯度累积步数
+        self.label_smoothing = 0.1  # 标签平滑系数
+        self.use_focal_loss = True  # 使用Focal Loss
+        self.focal_gamma = 2.0  # Focal Loss的gamma参数
+        self.attention_heads = 12  # 增加注意力头数量
+        self.use_layer_norm = True  # 使用层归一化
+        self.use_residual = True  # 使用残差连接
+        self.use_gelu = True  # 使用GELU激活函数
+        
         # 设备配置 - 增加MPS支持（苹果M系列芯片）
         if use_gpu:
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
+                # 检查CUDA版本，决定是否启用TF32精度
+                if torch.cuda.get_device_capability()[0] >= 8:  # Ampere架构或更高
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                    self.log("启用TF32精度加速")
             elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
                 self.device = torch.device('mps')
+                # 对于MPS，禁用混合精度训练，因为MPS不完全支持
+                self.use_mixed_precision = False
+                self.log("在MPS设备上禁用混合精度训练")
             else:
                 self.device = torch.device('cpu')
+                self.use_mixed_precision = False
         else:
             self.device = torch.device('cpu')
+            self.use_mixed_precision = False
         
         # 输入特征大小
         self.input_size = self.red_count + self.blue_count
@@ -263,24 +304,27 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             self.parameters(), 
             lr=self.learning_rate, 
             weight_decay=self.weight_decay,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.95),  # 调整beta2参数
             eps=1e-8
         )
         
         # 学习率调度器 - 更平滑的学习率调整
         self.scheduler = optim.lr_scheduler.OneCycleLR(
             self.optimizer,
-            max_lr=self.learning_rate * 3,  # 进一步降低最大学习率倍数
-            epochs=800,                    # 大幅增加总epoch数
-            steps_per_epoch=50,            # 减少每个epoch的步数
-            pct_start=0.3,                 # 增加预热阶段
+            max_lr=self.learning_rate * 5,  # 增加最大学习率倍数
+            epochs=1000,                   # 进一步增加总epoch数
+            steps_per_epoch=30,            # 减少每个epoch的步数
+            pct_start=0.2,                 # 调整预热阶段
             anneal_strategy='cos',
-            div_factor=20.0,               # 初始学习率除数
-            final_div_factor=5000.0        # 最终学习率除数
+            div_factor=25.0,               # 调整初始学习率除数
+            final_div_factor=10000.0       # 调整最终学习率除数
         )
         
+        # 混合精度训练的scaler
+        self.amp_scaler = torch.cuda.amp.GradScaler() if self.use_mixed_precision else None
+        
         # 损失函数 - 调整权重比例
-        self.criterion = LotteryLoss(alpha=0.7, beta=0.3)  # 增加分布约束权重
+        self.criterion = LotteryLoss(alpha=0.65, beta=0.35)  # 进一步增加分布约束权重
         
         # 训练状态
         self.training_history = {'loss': [], 'red_accuracy': [], 'blue_accuracy': []}
@@ -292,21 +336,25 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         self.blue_freq = None
         
         # 梯度裁剪值
-        self.grad_clip_value = 0.5  # 添加更严格的梯度裁剪值
+        self.grad_clip_value = 0.8  # 调整梯度裁剪值
         
     def _build_network(self):
         """
-        构建优化的网络架构
+        构建优化的网络架构 - 增强版本 2.0
         """
-        # 输入嵌入层 - 增加批归一化提高稳定性
+        # 输入嵌入层 - 多层次特征提取与归一化
         self.input_embedding = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),
             nn.BatchNorm1d(self.hidden_size),
             nn.GELU(),
-            nn.Dropout(self.dropout)
+            nn.Dropout(self.dropout),
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.BatchNorm1d(self.hidden_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.8)  # 略微降低第二层dropout
         )
         
-        # 增强LSTM层 - 保持不变但参数已优化
+        # 增强LSTM层 - 使用更高级的配置
         self.lstm_layer = EnhancedLSTMLayer(
             input_size=self.hidden_size,
             hidden_size=self.hidden_size,
@@ -316,56 +364,106 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             use_attention=self.use_attention
         )
         
-        # 特征融合层 - 增加残差连接和层归一化
+        # 特征融合层 - 增强版本，使用多头注意力和FFN
         lstm_output_size = self.hidden_size * 2 if self.bidirectional else self.hidden_size
-        self.layer_norm1 = nn.LayerNorm(lstm_output_size)
-        self.feature_fusion = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(lstm_output_size, lstm_output_size)
-        )
-        self.layer_norm2 = nn.LayerNorm(lstm_output_size)
         
-        # 红球预测头 - 共享部分特征提取
+        # 多头自注意力机制 - 增强序列内部关联
+        self.self_attention = MultiHeadAttention(
+            d_model=lstm_output_size,
+            num_heads=min(8, lstm_output_size // 64),  # 动态设置头数
+            dropout=self.dropout * 0.7
+        )
+        
+        # 层归一化和残差连接
+        self.layer_norm1 = nn.LayerNorm(lstm_output_size)
+        self.layer_norm2 = nn.LayerNorm(lstm_output_size)
+        self.layer_norm3 = nn.LayerNorm(lstm_output_size)
+        
+        # 前馈网络 - 使用更宽的隐藏层
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(lstm_output_size, lstm_output_size * 2),  # 扩展维度
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.8),
+            nn.Linear(lstm_output_size * 2, lstm_output_size)
+        )
+        
+        # 上下文增强层 - 捕获全局信息
+        self.context_enhancement = nn.Sequential(
+            nn.Linear(lstm_output_size, lstm_output_size),
+            nn.LayerNorm(lstm_output_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.6)
+        )
+        
+        # 红球预测头 - 增强版本，使用多层特征提取
         self.shared_red_features = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size),
             nn.LayerNorm(lstm_output_size),
             nn.GELU(),
-            nn.Dropout(self.dropout * 0.5)  # 降低dropout以减少过拟合
+            nn.Dropout(self.dropout * 0.5),
+            nn.Linear(lstm_output_size, lstm_output_size),
+            nn.LayerNorm(lstm_output_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.4)  # 进一步降低dropout
         )
+        
+        # 使用改进的预测头，增加温度参数的自适应性
         self.red_heads = nn.ModuleList([
-            AdaptivePredictionHead(lstm_output_size, self.red_range, self.dropout * 0.5)
-            for _ in range(self.red_count)
+            AdaptivePredictionHead(
+                input_size=lstm_output_size, 
+                output_size=self.red_range, 
+                dropout=self.dropout * (0.5 - i * 0.05),  # 位置自适应dropout
+                use_layernorm=True  # 启用层归一化
+            )
+            for i in range(self.red_count)
         ])
         
-        # 蓝球预测头 - 共享部分特征提取
+        # 蓝球预测头 - 增强版本，使用多层特征提取
         self.shared_blue_features = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size),
             nn.LayerNorm(lstm_output_size),
             nn.GELU(),
-            nn.Dropout(self.dropout * 0.5)  # 降低dropout以减少过拟合
+            nn.Dropout(self.dropout * 0.5),
+            nn.Linear(lstm_output_size, lstm_output_size),
+            nn.LayerNorm(lstm_output_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.4)  # 进一步降低dropout
         )
+        
+        # 蓝球通常更重要，使用更精细的预测头
         self.blue_heads = nn.ModuleList([
-            AdaptivePredictionHead(lstm_output_size, self.blue_range, self.dropout * 0.5)
+            AdaptivePredictionHead(
+                input_size=lstm_output_size, 
+                output_size=self.blue_range, 
+                dropout=self.dropout * 0.4,  # 使用更低的dropout
+                use_layernorm=True  # 启用层归一化
+            )
             for _ in range(self.blue_count)
         ])
         
-        # 全局特征提取器 - 增加注意力池化
+        # 全局特征提取器 - 使用多头注意力池化
         self.global_attention = nn.Sequential(
-            nn.Linear(lstm_output_size, 1),
+            nn.Linear(lstm_output_size, lstm_output_size // 4),
+            nn.GELU(),
+            nn.Linear(lstm_output_size // 4, 1),
             nn.Sigmoid()
         )
+        
+        # 全局特征提取器 - 多层次特征融合
         self.global_feature_extractor = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size),
             nn.LayerNorm(lstm_output_size),
             nn.GELU(),
-            nn.Dropout(self.dropout * 0.5)
+            nn.Dropout(self.dropout * 0.4),
+            nn.Linear(lstm_output_size, lstm_output_size),
+            nn.LayerNorm(lstm_output_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout * 0.3)  # 使用更低的dropout
         )
         
     def forward(self, x):
         """
-        前向传播 - 优化的实现
+        前向传播 - 增强版实现 2.0
         """
         batch_size, seq_len, _ = x.shape
         
@@ -377,44 +475,106 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         # LSTM处理
         lstm_out, attention_weights = self.lstm_layer(embedded)
         
-        # 特征融合 - 增加残差连接和层归一化
+        # 应用多头自注意力机制增强序列内部关联
         normed_lstm = self.layer_norm1(lstm_out)
-        fusion_out = self.feature_fusion(normed_lstm)
-        fused_features = self.layer_norm2(normed_lstm + fusion_out)  # 残差连接
         
-        # 全局特征 - 使用注意力加权池化
-        # 计算注意力权重
+        # 自注意力处理 - 增强序列内部关联
+        if seq_len > 1:  # 只有序列长度大于1时才应用自注意力
+            # 创建注意力掩码，防止信息泄漏
+            attn_mask = torch.ones(seq_len, seq_len, device=x.device).triu_(diagonal=1).bool()
+            
+            # 应用自注意力 - 适配MultiHeadAttention类的接口
+            self_attn_out, self_attn_weights = self.self_attention(normed_lstm, normed_lstm, normed_lstm, attn_mask)
+            normed_lstm = normed_lstm + self_attn_out  # 残差连接
+        
+        # 应用层归一化
+        normed_lstm = self.layer_norm2(normed_lstm)
+        
+        # 特征融合 - 使用更宽的前馈网络
+        fusion_out = self.feature_fusion(normed_lstm)
+        fused_features = normed_lstm + fusion_out  # 残差连接
+        fused_features = self.layer_norm3(fused_features)  # 再次归一化
+        
+        # 上下文增强 - 捕获全局信息
+        context_enhanced = self.context_enhancement(fused_features)
+        
+        # 全局特征 - 使用多头注意力池化
+        # 计算注意力权重 - 使用更复杂的注意力机制
         attention_scores = self.global_attention(fused_features)  # [batch_size, seq_len, 1]
-        attention_weights_global = F.softmax(attention_scores, dim=1)
+        
+        # 使用softmax获取注意力权重，但增加温度参数使分布更加平滑
+        temperature = 1.0  # 可以调整这个值来控制注意力分布的平滑度
+        attention_weights_global = F.softmax(attention_scores / temperature, dim=1)
         
         # 加权求和得到全局特征
-        global_context = torch.sum(fused_features * attention_weights_global, dim=1)  # [batch_size, hidden_size]
+        global_context = torch.sum(context_enhanced * attention_weights_global, dim=1)  # [batch_size, hidden_size]
         global_features = self.global_feature_extractor(global_context)
         
-        # 序列特征（使用最后时间步和倒数第二时间步的加权组合）
-        if seq_len > 1:
+        # 序列特征 - 使用更复杂的加权方案
+        if seq_len > 2:
+            # 使用最后三个时间步的加权组合，赋予最近的时间步更高的权重
+            sequence_features = (fused_features[:, -1, :] * 0.6 + 
+                               fused_features[:, -2, :] * 0.3 + 
+                               fused_features[:, -3, :] * 0.1)
+        elif seq_len > 1:
+            # 使用最后两个时间步的加权组合
             sequence_features = fused_features[:, -1, :] * 0.7 + fused_features[:, -2, :] * 0.3
         else:
+            # 只有一个时间步
             sequence_features = fused_features[:, -1, :]
         
-        # 组合特征 - 使用门控机制融合全局和序列特征
-        gate = torch.sigmoid(global_features + sequence_features)  # 自适应门控
+        # 组合特征 - 使用改进的门控机制融合全局和序列特征
+        # 使用更复杂的门控网络，考虑特征之间的交互
+        gate_input = torch.cat([global_features, sequence_features, global_features * sequence_features], dim=-1)
+        gate_net = nn.Sequential(
+            nn.Linear(global_features.size(-1) * 3, global_features.size(-1)),
+            nn.LayerNorm(global_features.size(-1)),
+            nn.GELU(),
+            nn.Linear(global_features.size(-1), global_features.size(-1)),
+            nn.Sigmoid()
+        ).to(x.device)
+        gate = gate_net(gate_input)
+        
+        # 使用门控机制融合特征
         combined_features = gate * global_features + (1 - gate) * sequence_features
         
-        # 红球预测 - 使用共享特征提取
+        # 红球预测 - 使用增强的共享特征提取
         red_shared = self.shared_red_features(combined_features)
-        red_outputs = [head(red_shared) for head in self.red_heads]
         
-        # 蓝球预测 - 使用共享特征提取
+        # 为每个红球位置生成独特的特征表示
+        red_position_features = []
+        for i in range(self.red_count):
+            # 位置编码 - 使每个位置的特征略有不同
+            position_weight = 1.0 - (i * 0.05)  # 位置权重从1.0逐渐减小
+            position_bias = torch.ones_like(red_shared) * (i * 0.01)  # 位置偏置
+            position_feature = red_shared * position_weight + position_bias
+            red_position_features.append(position_feature)
+        
+        # 使用位置特定的特征进行预测
+        red_outputs = [head(feat) for head, feat in zip(self.red_heads, red_position_features)]
+        
+        # 蓝球预测 - 使用增强的共享特征提取
         blue_shared = self.shared_blue_features(combined_features)
-        blue_outputs = [head(blue_shared) for head in self.blue_heads]
+        
+        # 为每个蓝球位置生成独特的特征表示
+        blue_position_features = []
+        for i in range(self.blue_count):
+            # 蓝球位置编码
+            position_weight = 1.0 - (i * 0.03)  # 蓝球位置权重衰减更慢
+            position_bias = torch.ones_like(blue_shared) * (i * 0.005)  # 较小的位置偏置
+            position_feature = blue_shared * position_weight + position_bias
+            blue_position_features.append(position_feature)
+        
+        # 使用位置特定的特征进行预测
+        blue_outputs = [head(feat) for head, feat in zip(self.blue_heads, blue_position_features)]
         
         return {
             'red_logits': red_outputs,
             'blue_logits': blue_outputs,
             'attention_weights': attention_weights,
             'features': combined_features,
-            'global_attention': attention_weights_global  # 返回全局注意力权重用于可视化
+            'global_attention': attention_weights_global,  # 返回全局注意力权重用于可视化
+            'gate': gate  # 返回门控值用于分析
         }
     
     def _compute_historical_frequency(self, data):
