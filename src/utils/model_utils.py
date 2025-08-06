@@ -6,7 +6,7 @@ import os
 import torch
 import joblib
 import numpy as np
-from core.model import LstmCRFModel
+from src.core.model import LstmCRFModel
 
 # 添加安全的全局变量，以允许numpy._core.multiarray._reconstruct
 try:

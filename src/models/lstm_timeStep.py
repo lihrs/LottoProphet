@@ -1202,8 +1202,57 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                     self.log("错误：关键参数不匹配且strict=True，无法加载模型")
                     return False
             
-            # 加载模型状态
-            self.load_state_dict(model_data['model_state_dict'], strict=False)
+            # 检查输入维度是否匹配
+            state_dict = model_data['model_state_dict']
+            if 'input_embedding.0.weight' in state_dict:
+                saved_input_size = state_dict['input_embedding.0.weight'].shape[1]
+                if saved_input_size != self.input_size:
+                    self.log(f"警告：输入维度不匹配 - 保存的模型: {saved_input_size}, 当前模型: {self.input_size}")
+                    
+                    # 保存当前的input_size
+                    current_input_size = self.input_size
+                    
+                    # 先重新创建输入嵌入层以匹配保存的模型的input_size
+                    self.log(f"重新创建输入嵌入层以匹配保存的模型的输入维度: {saved_input_size}")
+                    old_embedding = self.input_embedding
+                    
+                    # 临时调整input_size以匹配保存的模型
+                    self.input_size = saved_input_size
+                    
+                    # 重新创建输入嵌入层
+                    self.input_embedding = nn.Sequential(
+                        nn.Linear(self.input_size, self.hidden_size),
+                        old_embedding[1],  # 保留原有的BatchNorm1d
+                        old_embedding[2],  # 保留原有的ReLU
+                        old_embedding[3]   # 保留原有的Dropout
+                    )
+                    # 将新层移动到正确的设备上
+                    self.input_embedding = self.input_embedding.to(self.device)
+                    
+                    # 加载模型状态
+                    self.load_state_dict(state_dict, strict=False)
+                    
+                    # 如果当前的input_size与保存的不同，再次重新创建输入嵌入层
+                    if current_input_size != saved_input_size:
+                        self.log(f"恢复当前的输入维度: {current_input_size}")
+                        self.input_size = current_input_size
+                        
+                        # 再次重新创建输入嵌入层以匹配当前的input_size
+                        old_embedding = self.input_embedding
+                        self.input_embedding = nn.Sequential(
+                            nn.Linear(self.input_size, self.hidden_size),
+                            old_embedding[1],  # 保留原有的BatchNorm1d
+                            old_embedding[2],  # 保留原有的ReLU
+                            old_embedding[3]   # 保留原有的Dropout
+                        )
+                        # 将新层移动到正确的设备上
+                        self.input_embedding = self.input_embedding.to(self.device)
+                else:
+                    # 输入维度匹配，直接加载模型状态
+                    self.load_state_dict(state_dict, strict=False)
+            else:
+                # 如果找不到输入嵌入层的权重，直接加载模型状态
+                self.load_state_dict(state_dict, strict=False)
             
             # 加载优化器状态
             if 'optimizer_state_dict' in model_data and model_data['optimizer_state_dict'] is not None and self.optimizer:
