@@ -8,6 +8,13 @@ import joblib
 import numpy as np
 from core.model import LstmCRFModel
 
+# 添加安全的全局变量，以允许numpy._core.multiarray._reconstruct
+try:
+    torch.serialization.add_safe_globals(['numpy._core.multiarray._reconstruct'])
+except (AttributeError, ImportError):
+    # 兼容旧版PyTorch
+    pass
+
 # 模型和路径配置
 name_path = {
     "dlt": {
@@ -51,7 +58,8 @@ def load_pytorch_model(model_path, input_dim, hidden_dim, output_dim, output_seq
         blue_model: 蓝球预测模型
         scaler_X: 特征缩放器
     """
-    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    # 设置weights_only=False以兼容PyTorch 2.6+
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
     
     # 检查checkpoint中是否包含模型配置信息
     model_config = checkpoint.get('model_config', {})

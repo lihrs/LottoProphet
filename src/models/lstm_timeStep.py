@@ -18,6 +18,13 @@ from .base import BaseMLModel
 from utils.device_utils import check_device_availability
 import math
 
+# 添加安全的全局变量，以允许numpy._core.multiarray._reconstruct
+try:
+    torch.serialization.add_safe_globals(['numpy._core.multiarray._reconstruct'])
+except (AttributeError, ImportError):
+    # 兼容旧版PyTorch
+    pass
+
 # 添加项目根目录到Python路径
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(os.path.dirname(script_dir))
@@ -240,9 +247,9 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
     7. 特征融合与增强
     """
     
-    def __init__(self, lottery_type='dlt', feature_window=15, log_callback=None, use_gpu=False,
-                 hidden_size=512, num_layers=4, dropout=0.15, bidirectional=True,
-                 use_attention=True, learning_rate=0.0003, weight_decay=5e-6):
+    def __init__(self, lottery_type='dlt', feature_window=10, log_callback=None, use_gpu=False,
+                 hidden_size=256, num_layers=2, dropout=0.2, bidirectional=True,
+                 use_attention=True, learning_rate=0.0005, weight_decay=1e-5):
         """
         初始化高级LSTM TimeStep模型
         """
@@ -299,32 +306,26 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         # 移动到设备
         self.to(self.device)
         
-        # 优化器配置 - 使用更稳定的配置
-        self.optimizer = optim.AdamW(
+        # 简化的优化器配置
+        self.optimizer = optim.Adam(
             self.parameters(), 
             lr=self.learning_rate, 
-            weight_decay=self.weight_decay,
-            betas=(0.9, 0.95),  # 调整beta2参数
-            eps=1e-8
+            weight_decay=self.weight_decay
         )
         
-        # 学习率调度器 - 更平滑的学习率调整
-        self.scheduler = optim.lr_scheduler.OneCycleLR(
+        # 简化的学习率调度器
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            max_lr=self.learning_rate * 5,  # 增加最大学习率倍数
-            epochs=1000,                   # 进一步增加总epoch数
-            steps_per_epoch=30,            # 减少每个epoch的步数
-            pct_start=0.2,                 # 调整预热阶段
-            anneal_strategy='cos',
-            div_factor=25.0,               # 调整初始学习率除数
-            final_div_factor=10000.0       # 调整最终学习率除数
+            mode='min',
+            factor=0.5,
+            patience=20
         )
         
-        # 混合精度训练的scaler
-        self.amp_scaler = torch.cuda.amp.GradScaler() if self.use_mixed_precision else None
+        # 混合精度训练的scaler - 仅在CUDA可用时使用
+        self.amp_scaler = torch.cuda.amp.GradScaler() if (self.use_mixed_precision and torch.cuda.is_available()) else None
         
-        # 损失函数 - 调整权重比例
-        self.criterion = LotteryLoss(alpha=0.65, beta=0.35)  # 进一步增加分布约束权重
+        # 损失函数 - 使用简单的交叉熵损失
+        self.criterion = nn.CrossEntropyLoss()
         
         # 训练状态
         self.training_history = {'loss': [], 'red_accuracy': [], 'blue_accuracy': []}
@@ -340,21 +341,17 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
     def _build_network(self):
         """
-        构建优化的网络架构 - 增强版本 2.0
+        构建精简的网络架构 - 优化训练速度
         """
-        # 输入嵌入层 - 多层次特征提取与归一化
+        # 输入嵌入层 - 简化为单层
         self.input_embedding = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),
             nn.BatchNorm1d(self.hidden_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.BatchNorm1d(self.hidden_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.8)  # 略微降低第二层dropout
+            nn.ReLU(),
+            nn.Dropout(self.dropout)
         )
         
-        # 增强LSTM层 - 使用更高级的配置
+        # 简化LSTM层
         self.lstm_layer = EnhancedLSTMLayer(
             input_size=self.hidden_size,
             hidden_size=self.hidden_size,
@@ -364,106 +361,46 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             use_attention=self.use_attention
         )
         
-        # 特征融合层 - 增强版本，使用多头注意力和FFN
+        # 计算LSTM输出大小
         lstm_output_size = self.hidden_size * 2 if self.bidirectional else self.hidden_size
         
-        # 多头自注意力机制 - 增强序列内部关联
-        self.self_attention = MultiHeadAttention(
-            d_model=lstm_output_size,
-            num_heads=min(8, lstm_output_size // 64),  # 动态设置头数
-            dropout=self.dropout * 0.7
-        )
+        # 简化的层归一化
+        self.layer_norm = nn.LayerNorm(lstm_output_size)
         
-        # 层归一化和残差连接
-        self.layer_norm1 = nn.LayerNorm(lstm_output_size)
-        self.layer_norm2 = nn.LayerNorm(lstm_output_size)
-        self.layer_norm3 = nn.LayerNorm(lstm_output_size)
-        
-        # 前馈网络 - 使用更宽的隐藏层
-        self.feature_fusion = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size * 2),  # 扩展维度
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.8),
-            nn.Linear(lstm_output_size * 2, lstm_output_size)
-        )
-        
-        # 上下文增强层 - 捕获全局信息
-        self.context_enhancement = nn.Sequential(
+        # 简化的特征处理层
+        self.feature_processor = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.6)
+            nn.ReLU(),
+            nn.Dropout(self.dropout)
         )
         
-        # 红球预测头 - 增强版本，使用多层特征提取
-        self.shared_red_features = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.5),
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.4)  # 进一步降低dropout
-        )
-        
-        # 使用改进的预测头，增加温度参数的自适应性
+        # 红球预测头 - 简化版本
         self.red_heads = nn.ModuleList([
-            AdaptivePredictionHead(
-                input_size=lstm_output_size, 
-                output_size=self.red_range, 
-                dropout=self.dropout * (0.5 - i * 0.05),  # 位置自适应dropout
-                use_layernorm=True  # 启用层归一化
+            nn.Sequential(
+                nn.Linear(lstm_output_size, self.red_range),
+                nn.LogSoftmax(dim=-1)
             )
-            for i in range(self.red_count)
+            for _ in range(self.red_count)
         ])
         
-        # 蓝球预测头 - 增强版本，使用多层特征提取
-        self.shared_blue_features = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.5),
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.4)  # 进一步降低dropout
-        )
-        
-        # 蓝球通常更重要，使用更精细的预测头
+        # 蓝球预测头 - 简化版本
         self.blue_heads = nn.ModuleList([
-            AdaptivePredictionHead(
-                input_size=lstm_output_size, 
-                output_size=self.blue_range, 
-                dropout=self.dropout * 0.4,  # 使用更低的dropout
-                use_layernorm=True  # 启用层归一化
+            nn.Sequential(
+                nn.Linear(lstm_output_size, self.blue_range),
+                nn.LogSoftmax(dim=-1)
             )
             for _ in range(self.blue_count)
         ])
         
-        # 全局特征提取器 - 使用多头注意力池化
+        # 简化的全局注意力
         self.global_attention = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size // 4),
-            nn.GELU(),
-            nn.Linear(lstm_output_size // 4, 1),
+            nn.Linear(lstm_output_size, 1),
             nn.Sigmoid()
-        )
-        
-        # 全局特征提取器 - 多层次特征融合
-        self.global_feature_extractor = nn.Sequential(
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.4),
-            nn.Linear(lstm_output_size, lstm_output_size),
-            nn.LayerNorm(lstm_output_size),
-            nn.GELU(),
-            nn.Dropout(self.dropout * 0.3)  # 使用更低的dropout
         )
         
     def forward(self, x):
         """
-        前向传播 - 增强版实现 2.0
+        前向传播 - 简化版实现
         """
         batch_size, seq_len, _ = x.shape
         
@@ -475,106 +412,37 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         # LSTM处理
         lstm_out, attention_weights = self.lstm_layer(embedded)
         
-        # 应用多头自注意力机制增强序列内部关联
-        normed_lstm = self.layer_norm1(lstm_out)
-        
-        # 自注意力处理 - 增强序列内部关联
-        if seq_len > 1:  # 只有序列长度大于1时才应用自注意力
-            # 创建注意力掩码，防止信息泄漏
-            attn_mask = torch.ones(seq_len, seq_len, device=x.device).triu_(diagonal=1).bool()
-            
-            # 应用自注意力 - 适配MultiHeadAttention类的接口
-            self_attn_out, self_attn_weights = self.self_attention(normed_lstm, normed_lstm, normed_lstm, attn_mask)
-            normed_lstm = normed_lstm + self_attn_out  # 残差连接
-        
         # 应用层归一化
-        normed_lstm = self.layer_norm2(normed_lstm)
+        normed_lstm = self.layer_norm(lstm_out)
         
-        # 特征融合 - 使用更宽的前馈网络
-        fusion_out = self.feature_fusion(normed_lstm)
-        fused_features = normed_lstm + fusion_out  # 残差连接
-        fused_features = self.layer_norm3(fused_features)  # 再次归一化
+        # 特征处理
+        processed_features = self.feature_processor(normed_lstm)
         
-        # 上下文增强 - 捕获全局信息
-        context_enhanced = self.context_enhancement(fused_features)
-        
-        # 全局特征 - 使用多头注意力池化
-        # 计算注意力权重 - 使用更复杂的注意力机制
-        attention_scores = self.global_attention(fused_features)  # [batch_size, seq_len, 1]
-        
-        # 使用softmax获取注意力权重，但增加温度参数使分布更加平滑
-        temperature = 1.0  # 可以调整这个值来控制注意力分布的平滑度
-        attention_weights_global = F.softmax(attention_scores / temperature, dim=1)
+        # 简化的注意力机制
+        attention_scores = self.global_attention(processed_features)  # [batch_size, seq_len, 1]
+        attention_weights_global = F.softmax(attention_scores, dim=1)
         
         # 加权求和得到全局特征
-        global_context = torch.sum(context_enhanced * attention_weights_global, dim=1)  # [batch_size, hidden_size]
-        global_features = self.global_feature_extractor(global_context)
+        global_features = torch.sum(processed_features * attention_weights_global, dim=1)  # [batch_size, hidden_size]
         
-        # 序列特征 - 使用更复杂的加权方案
-        if seq_len > 2:
-            # 使用最后三个时间步的加权组合，赋予最近的时间步更高的权重
-            sequence_features = (fused_features[:, -1, :] * 0.6 + 
-                               fused_features[:, -2, :] * 0.3 + 
-                               fused_features[:, -3, :] * 0.1)
-        elif seq_len > 1:
-            # 使用最后两个时间步的加权组合
-            sequence_features = fused_features[:, -1, :] * 0.7 + fused_features[:, -2, :] * 0.3
-        else:
-            # 只有一个时间步
-            sequence_features = fused_features[:, -1, :]
+        # 使用最后一个时间步的特征作为序列特征
+        sequence_features = processed_features[:, -1, :]
         
-        # 组合特征 - 使用改进的门控机制融合全局和序列特征
-        # 使用更复杂的门控网络，考虑特征之间的交互
-        gate_input = torch.cat([global_features, sequence_features, global_features * sequence_features], dim=-1)
-        gate_net = nn.Sequential(
-            nn.Linear(global_features.size(-1) * 3, global_features.size(-1)),
-            nn.LayerNorm(global_features.size(-1)),
-            nn.GELU(),
-            nn.Linear(global_features.size(-1), global_features.size(-1)),
-            nn.Sigmoid()
-        ).to(x.device)
-        gate = gate_net(gate_input)
+        # 简单组合全局特征和序列特征
+        combined_features = global_features * 0.6 + sequence_features * 0.4
         
-        # 使用门控机制融合特征
-        combined_features = gate * global_features + (1 - gate) * sequence_features
+        # 红球预测
+        red_outputs = [head(combined_features) for head in self.red_heads]
         
-        # 红球预测 - 使用增强的共享特征提取
-        red_shared = self.shared_red_features(combined_features)
-        
-        # 为每个红球位置生成独特的特征表示
-        red_position_features = []
-        for i in range(self.red_count):
-            # 位置编码 - 使每个位置的特征略有不同
-            position_weight = 1.0 - (i * 0.05)  # 位置权重从1.0逐渐减小
-            position_bias = torch.ones_like(red_shared) * (i * 0.01)  # 位置偏置
-            position_feature = red_shared * position_weight + position_bias
-            red_position_features.append(position_feature)
-        
-        # 使用位置特定的特征进行预测
-        red_outputs = [head(feat) for head, feat in zip(self.red_heads, red_position_features)]
-        
-        # 蓝球预测 - 使用增强的共享特征提取
-        blue_shared = self.shared_blue_features(combined_features)
-        
-        # 为每个蓝球位置生成独特的特征表示
-        blue_position_features = []
-        for i in range(self.blue_count):
-            # 蓝球位置编码
-            position_weight = 1.0 - (i * 0.03)  # 蓝球位置权重衰减更慢
-            position_bias = torch.ones_like(blue_shared) * (i * 0.005)  # 较小的位置偏置
-            position_feature = blue_shared * position_weight + position_bias
-            blue_position_features.append(position_feature)
-        
-        # 使用位置特定的特征进行预测
-        blue_outputs = [head(feat) for head, feat in zip(self.blue_heads, blue_position_features)]
+        # 蓝球预测
+        blue_outputs = [head(combined_features) for head in self.blue_heads]
         
         return {
             'red_logits': red_outputs,
             'blue_logits': blue_outputs,
             'attention_weights': attention_weights,
             'features': combined_features,
-            'global_attention': attention_weights_global,  # 返回全局注意力权重用于可视化
-            'gate': gate  # 返回门控值用于分析
+            'global_attention': attention_weights_global
         }
     
     def _compute_historical_frequency(self, data):
@@ -608,140 +476,250 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
         return red_freq.to(self.device), blue_freq.to(self.device)
     
-    def fit(self, data, epochs=800, batch_size=64, validation_split=0.2, 
-            early_stopping_patience=150, **kwargs):
+    def prepare_fibonacci_data(self, df, test_size=0.2):
         """
-        训练模型
+        基于斐波那契数列选择短期数据进行训练
+        
+        参数:
+            df: 原始数据DataFrame
+            test_size: 测试集比例
+            
+        返回:
+            训练集和测试集数据
         """
-        self.log(f"开始训练高级LSTM TimeStep模型，彩票类型: {self.lottery_type}")
-        self.log(f"优化参数: hidden_size={self.hidden_size}, num_layers={self.num_layers}")
+        self.log("准备训练数据 - 使用斐波那契短期数据选择策略...")
+        
+        # 设置特征窗口大小
+        window_size = self.feature_window
+        
+        # 确保数据按期数排序
+        df = df.sort_values('期数').reset_index(drop=True)
+        
+        # 提取红蓝球列名
+        if self.lottery_type == 'dlt':
+            red_cols = [col for col in df.columns if col.startswith('红球_')][:5]
+            blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:2]
+        else:  # ssq
+            red_cols = [col for col in df.columns if col.startswith('红球_')][:6]
+            blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:1]
+        
+        # 基于斐波那契数列选择短期数据
+        fib_periods = [3, 5, 8, 13, 21, 34, 55]
+        
+        # 创建特征和标签
+        X_data = []
+        y_red_data = []
+        y_blue_data = []
+        
+        # 获取最新的数据
+        latest_index = len(df) - 1
+        
+        self.log(f"原始数据总期数: {len(df)}")
+        self.log(f"斐波那契周期选择: {fib_periods}")
+        
+        # 为每个斐波那契周期创建数据集
+        for period in fib_periods:
+            self.log(f"处理周期: {period}期")
+            
+            # 确保周期不超过可用数据量
+            if period >= len(df):
+                self.log(f"  - 跳过: 周期{period}大于可用数据量{len(df)}")
+                continue
+            
+            # 选择最近的period期数据
+            period_df = df.iloc[-period:].reset_index(drop=True)
+            self.log(f"  - 选择最近{period}期数据，实际获取: {len(period_df)}期")
+            
+            # 使用滑动窗口创建序列数据
+            for i in range(len(period_df) - window_size):
+                # 特征：过去window_size期的开奖号码
+                features = []
+                for j in range(window_size):
+                    row_features = []
+                    for col in red_cols + blue_cols:
+                        row_features.append(period_df.iloc[i + j][col])
+                    features.append(row_features)
+                
+                # 标签：下一期的红球和蓝球号码（转换为0-based索引）
+                red_labels = []
+                blue_labels = []
+                for col in red_cols:
+                    # 减1转换为0-based索引，并确保在有效范围内
+                    value = period_df.iloc[i + window_size][col] - 1
+                    # 确保红球值在有效范围内 [0, red_range-1]
+                    value = max(0, min(value, self.red_range - 1))
+                    red_labels.append(value)
+                for col in blue_cols:
+                    # 获取原始值
+                    original_value = period_df.iloc[i + window_size][col]
+                    # 减1转换为0-based索引
+                    value = original_value - 1
+                    
+                    # 检查蓝球值是否在有效范围内 [0, blue_range-1]
+                    if value < 0 or value >= self.blue_range:
+                        self.log(f"警告: 蓝球原始值{original_value}(索引{value})超出范围[1-{self.blue_range}]，已调整为有效范围")
+                        # 修正到有效范围
+                        value = max(0, min(value, self.blue_range - 1))
+                        self.log(f"  - 已调整为: {value} (原始值对应: {value+1})")
+                    
+                    blue_labels.append(value)
+                
+                X_data.append(features)
+                y_red_data.append(red_labels)
+                y_blue_data.append(blue_labels)
+            
+            self.log(f"  - 周期{period}生成样本数: {len(period_df) - window_size}")
+        
+        # 转换为NumPy数组
+        X = np.array(X_data)
+        y_red = np.array(y_red_data, dtype=int)
+        y_blue = np.array(y_blue_data, dtype=int)
+        
+        # 检查数据是否为空
+        if len(X_data) == 0 or len(y_red_data) == 0 or len(y_blue_data) == 0:
+            self.log(f"错误: 生成的训练数据为空。请检查数据集大小({len(df)}行)是否小于特征窗口大小({window_size})。")
+            raise ValueError(f"训练数据为空，无法继续训练。请确保数据集大小大于特征窗口大小({window_size})。")
+        
+        # 验证标签范围
+        if len(y_red) > 0:
+            self.log(f"红球标签范围: {np.min(y_red)} - {np.max(y_red)}, 预期范围: 0 - {self.red_range-1}")
+        else:
+            self.log("警告: 红球标签数组为空，无法计算范围")
+            
+        if len(y_blue) > 0:
+            self.log(f"蓝球标签范围: {np.min(y_blue)} - {np.max(y_blue)}, 预期范围: 0 - {self.blue_range-1}")
+        else:
+            self.log("警告: 蓝球标签数组为空，无法计算范围")
+        
+        self.log(f"基于斐波那契数列的短期数据选择完成，总样本数: {len(X)}")
+        
+        # 划分训练集和测试集
+        if test_size > 0 and len(X) > 10:  # 确保数据足够划分
+            # 使用时间序列划分，保留最近的数据作为测试集
+            split_idx = int(len(X) * (1 - test_size))
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_red_train, y_red_test = [], []
+            y_blue_train, y_blue_test = [], []
+            
+            # 分别处理每个位置的红球和蓝球
+            for i in range(len(y_red[0])):
+                y_red_train.append(y_red[:split_idx, i])
+                y_red_test.append(y_red[split_idx:, i])
+            
+            for i in range(len(y_blue[0])):
+                y_blue_train.append(y_blue[:split_idx, i])
+                y_blue_test.append(y_blue[split_idx:, i])
+            
+            self.log(f"数据划分完成: 训练集 {len(X_train)} 样本, 测试集 {len(X_test)} 样本")
+            return X_train, X_test, y_red_train, y_red_test, y_blue_train, y_blue_test
+        else:
+            # 不划分测试集，全部用于训练
+            y_red_train = [y_red[:, i] for i in range(y_red.shape[1])]
+            y_blue_train = [y_blue[:, i] for i in range(y_blue.shape[1])]
+            
+            self.log(f"全部数据用于训练: {len(X)} 样本")
+            return X, np.array([]), y_red_train, [], y_blue_train, []
+    
+    def fit(self, data, epochs=500, batch_size=64, validation_split=0.2, 
+            early_stopping_patience=50, **kwargs):
+        """
+        训练模型 - 简化版，使用斐波那契短期数据策略
+        """
+        self.log(f"开始训练简化版LSTM TimeStep模型，彩票类型: {self.lottery_type}")
+        self.log(f"优化参数: hidden_size={self.hidden_size}, num_layers={self.num_layers}, dropout={self.dropout}")
         self.log(f"训练参数: epochs={epochs}, batch_size={batch_size}, lr={self.learning_rate}")
-        self.log(f"训练数据: {data}")
+        self.log(f"训练策略: 基于斐波那契数列的短期数据选择")
         
         try:
             # 计算历史频率
             self.red_freq, self.blue_freq = self._compute_historical_frequency(data)
-            self.log(f"红球频率: {self.red_freq}")
-            self.log(f"蓝球频率: {self.blue_freq}")
-            # 准备数据
-            X_train, X_val, red_train_data, red_val_data, blue_train_data, blue_val_data = self.prepare_data(
+            
+            # 准备数据 - 使用基于斐波那契数列的短期数据选择策略
+            X_train, X_val, red_train_data, red_val_data, blue_train_data, blue_val_data = self.prepare_fibonacci_data(
                 data, test_size=validation_split
             )
             
             # 转换为序列数据
             X_train_seq = self._prepare_sequence_data(X_train)
-            X_val_seq = self._prepare_sequence_data(X_val)
+            X_val_seq = self._prepare_sequence_data(X_val) if len(X_val) > 0 else np.array([])
             
             # 保存最后序列用于预测
             self._last_sequence = X_val_seq[-1:] if len(X_val_seq) > 0 else X_train_seq[-1:]
             
             # 转换为张量
             X_train_tensor = torch.FloatTensor(X_train_seq).to(self.device)
-            X_val_tensor = torch.FloatTensor(X_val_seq).to(self.device)
+            X_val_tensor = torch.FloatTensor(X_val_seq).to(self.device) if len(X_val_seq) > 0 else None
             
             # 准备标签
             red_train_tensors = [torch.LongTensor(red_data).to(self.device) for red_data in red_train_data]
-            red_val_tensors = [torch.LongTensor(red_data).to(self.device) for red_data in red_val_data]
+            red_val_tensors = [torch.LongTensor(red_data).to(self.device) for red_data in red_val_data] if red_val_data else []
             blue_train_tensors = [torch.LongTensor(blue_data).to(self.device) for blue_data in blue_train_data]
-            blue_val_tensors = [torch.LongTensor(blue_data).to(self.device) for blue_data in blue_val_data]
+            blue_val_tensors = [torch.LongTensor(blue_data).to(self.device) for blue_data in blue_val_data] if blue_val_data else []
             
-            # 数据加载器 - 添加数据增强和加权采样
-            # 使用加权采样，增加最近数据的权重
-            weights = torch.linspace(0.5, 1.0, len(X_train_tensor))
-            sampler = torch.utils.data.WeightedRandomSampler(weights, len(weights), replacement=True)
-            
+            # 数据加载器 - 简化版，不使用加权采样
             train_dataset = torch.utils.data.TensorDataset(
                 X_train_tensor, *red_train_tensors, *blue_train_tensors
             )
             train_loader = torch.utils.data.DataLoader(
-                train_dataset, batch_size=batch_size, sampler=sampler, drop_last=True
+                train_dataset, batch_size=batch_size, shuffle=True, drop_last=True
             )
             
-            val_dataset = torch.utils.data.TensorDataset(
-                X_val_tensor, *red_val_tensors, *blue_val_tensors
-            )
-            val_loader = torch.utils.data.DataLoader(
-                val_dataset, batch_size=batch_size, shuffle=False
-            )
+            # 验证集数据加载器
+            val_loader = None
+            if X_val_tensor is not None and len(red_val_tensors) > 0 and len(blue_val_tensors) > 0:
+                val_dataset = torch.utils.data.TensorDataset(
+                    X_val_tensor, *red_val_tensors, *blue_val_tensors
+                )
+                val_loader = torch.utils.data.DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False
+                )
             
             # 训练循环
             best_val_loss = float('inf')
-            best_val_combined_acc = 0.0  # 添加综合准确率指标
             patience_counter = 0
             
-            # 学习率预热 - 增加预热轮数
-            warmup_epochs = 10
-            initial_lr = self.learning_rate / 5
-            
-            # 训练前设置较小的学习率进行预热
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = initial_lr
-            
             for epoch in range(epochs):
-                # 学习率预热
-                if epoch < warmup_epochs:
-                    lr = initial_lr + (self.learning_rate - initial_lr) * epoch / warmup_epochs
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = lr
-                
                 # 训练阶段
                 train_loss, train_red_acc, train_blue_acc = self._train_epoch(train_loader)
                 
                 # 验证阶段
-                val_loss, val_red_acc, val_blue_acc = self._validate_epoch(val_loader)
+                val_loss, val_red_acc, val_blue_acc = self._validate_epoch(val_loader) if val_loader else (train_loss, train_red_acc, train_blue_acc)
                 
                 # 记录历史
                 self.training_history['loss'].append({'train': train_loss, 'val': val_loss})
                 self.training_history['red_accuracy'].append({'train': train_red_acc, 'val': val_red_acc})
                 self.training_history['blue_accuracy'].append({'train': train_blue_acc, 'val': val_blue_acc})
                 
-                # 计算综合准确率 - 红球权重0.7，蓝球权重0.3
-                val_combined_acc = val_red_acc * 0.7 + val_blue_acc * 0.3
-                
-                # 早停检查 - 使用更宽松的综合指标
+                # 早停检查 - 仅基于验证损失
                 improved = False
                 if val_loss < best_val_loss * 0.999:  # 损失需要改善(至少0.1%)
                     best_val_loss = val_loss
                     improved = True
-                
-                if val_combined_acc > best_val_combined_acc * 1.001:  # 准确率需要改善(至少0.1%)
-                    best_val_combined_acc = val_combined_acc
-                    improved = True
-                
-                if improved:
-                    patience_counter = 0
                     self.best_model_state = self.state_dict().copy()
+                    patience_counter = 0
                 else:
                     patience_counter += 1
                 
-                # 学习率调度 - 预热期后使用
-                if epoch >= warmup_epochs:
-                    self.scheduler.step()
+                # 学习率调度
+                self.scheduler.step(val_loss)
                 
-                # 动态早停耐心值 - 增加整体耐心值
-                dynamic_patience = early_stopping_patience * 2  # 基础耐心值翻倍
-                if epoch < epochs // 3:  # 训练初期使用更大的耐心值
-                    dynamic_patience = early_stopping_patience * 4
-                elif epoch > epochs * 2 // 3:  # 训练后期仍保持较大耐心值
-                    dynamic_patience = early_stopping_patience * 2
-                
-                # 日志输出 - 增加输出频率
-                if epoch % 10 == 0 or epoch == epochs - 1:
+                # 日志输出
+                if epoch % 5 == 0 or epoch == epochs - 1 or improved:
                     current_lr = self.optimizer.param_groups[0]['lr']
                     self.log(f"Epoch {epoch+1}/{epochs}: Train Loss: {train_loss:.4f}, "
                            f"Val Loss: {val_loss:.4f}, Red Acc: {val_red_acc:.3f}, "
-                           f"Blue Acc: {val_blue_acc:.3f}, Combined Acc: {val_combined_acc:.3f}, "
-                           f"LR: {current_lr:.6f}, Patience: {patience_counter}/{dynamic_patience}")
+                           f"Blue Acc: {val_blue_acc:.3f}, "
+                           f"LR: {current_lr:.6f}, Patience: {patience_counter}/{early_stopping_patience}")
                 
                 # 早停
-                if patience_counter >= dynamic_patience:
+                if patience_counter >= early_stopping_patience:
                     self.log(f"早停触发，在第{epoch+1}轮停止训练，已经{patience_counter}个epoch没有改善")
                     break
             
             # 加载最佳模型
             if self.best_model_state is not None:
                 self.load_state_dict(self.best_model_state)
-                self.log(f"加载最佳模型，验证损失: {best_val_loss:.4f}, 验证综合准确率: {best_val_combined_acc:.4f}")
+                self.log(f"加载最佳模型，验证损失: {best_val_loss:.4f}, 验证红球准确率: {val_red_acc:.4f}, 验证蓝球准确率: {val_blue_acc:.4f}")
             
             self.is_trained = True
             self.log("模型训练完成")
@@ -768,7 +746,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
     
     def _train_epoch(self, train_loader):
         """
-        训练一个epoch - 优化的实现
+        训练一个epoch - 简化版实现
         """
         self.train()
         total_loss = 0.0
@@ -776,54 +754,47 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         blue_correct = 0
         total_samples = 0
         
-        # 使用tqdm显示进度条
         for batch_data in train_loader:
             X_batch = batch_data[0]
             red_targets = batch_data[1:1+self.red_count]
             blue_targets = batch_data[1+self.red_count:]
             
-            # 使用更高效的梯度清零方式
-            for param in self.parameters():
-                param.grad = None
+            # 梯度清零
+            self.optimizer.zero_grad()
             
             # 前向传播
             outputs = self.forward(X_batch)
             
-            # 计算损失 - 使用更高效的损失计算
+            # 计算损失
             red_loss = 0.0
             blue_loss = 0.0
             
-            # 红球损失 - 使用权重衰减处理不同位置的球
+            # 红球损失
             for i, (red_logit, red_target) in enumerate(zip(outputs['red_logits'], red_targets)):
-                # 位置权重 - 前面的球更重要
-                position_weight = 1.0 - (i * 0.05)  # 位置权重从1.0逐渐减小
-                position_weight = max(0.7, position_weight)  # 确保最小权重不低于0.7
-                
-                loss = self.criterion(red_logit, red_target, self.red_freq) * position_weight
+                loss = self.criterion(red_logit, red_target)
                 red_loss += loss
                 
                 # 计算准确率
                 _, predicted = torch.max(red_logit, 1)
                 red_correct += (predicted == red_target).sum().item()
             
-            # 蓝球损失 - 蓝球通常更重要，增加权重
-            blue_weight = 1.2  # 蓝球权重增加20%
+            # 蓝球损失
             for i, (blue_logit, blue_target) in enumerate(zip(outputs['blue_logits'], blue_targets)):
-                loss = self.criterion(blue_logit, blue_target, self.blue_freq) * blue_weight
+                loss = self.criterion(blue_logit, blue_target)
                 blue_loss += loss
                 
                 # 计算准确率
                 _, predicted = torch.max(blue_logit, 1)
                 blue_correct += (predicted == blue_target).sum().item()
             
-            # 总损失 - 添加L2正则化
+            # 总损失
             total_batch_loss = red_loss + blue_loss
             
             # 反向传播
             total_batch_loss.backward()
             
-            # 梯度裁剪 - 使用更严格的值
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.grad_clip_value)
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             
             # 更新参数
             self.optimizer.step()
@@ -840,18 +811,16 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
     
     def _validate_epoch(self, val_loader):
         """
-        验证一个epoch - 优化的实现
+        验证一个epoch - 简化版实现
         """
+        if val_loader is None:
+            return 0.0, 0.0, 0.0
+            
         self.eval()
         total_loss = 0.0
         red_correct = 0
         blue_correct = 0
         total_samples = 0
-        
-        # 添加更多评估指标
-        red_top3_correct = 0  # 红球Top-3准确率
-        blue_top2_correct = 0  # 蓝球Top-2准确率
-        red_position_correct = [0] * self.red_count  # 每个位置的红球准确率
         
         with torch.no_grad():
             for batch_data in val_loader:
@@ -862,46 +831,27 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 # 前向传播
                 outputs = self.forward(X_batch)
                 
-                # 计算损失 - 与训练过程保持一致
+                # 计算损失
                 red_loss = 0.0
                 blue_loss = 0.0
                 
-                # 红球损失 - 使用与训练相同的权重
+                # 红球损失
                 for i, (red_logit, red_target) in enumerate(zip(outputs['red_logits'], red_targets)):
-                    # 位置权重
-                    position_weight = 1.0 - (i * 0.05)
-                    position_weight = max(0.7, position_weight)
-                    
-                    loss = self.criterion(red_logit, red_target, self.red_freq) * position_weight
+                    loss = self.criterion(red_logit, red_target)
                     red_loss += loss
                     
                     # 计算准确率
                     _, predicted = torch.max(red_logit, 1)
-                    batch_correct = (predicted == red_target).sum().item()
-                    red_correct += batch_correct
-                    red_position_correct[i] += batch_correct
-                    
-                    # 计算Top-3准确率
-                    _, top3_indices = torch.topk(red_logit, 3, dim=1)
-                    for j in range(X_batch.size(0)):
-                        if red_target[j].item() in top3_indices[j]:
-                            red_top3_correct += 1
+                    red_correct += (predicted == red_target).sum().item()
                 
-                # 蓝球损失 - 使用与训练相同的权重
-                blue_weight = 1.2
+                # 蓝球损失
                 for i, (blue_logit, blue_target) in enumerate(zip(outputs['blue_logits'], blue_targets)):
-                    loss = self.criterion(blue_logit, blue_target, self.blue_freq) * blue_weight
+                    loss = self.criterion(blue_logit, blue_target)
                     blue_loss += loss
                     
                     # 计算准确率
                     _, predicted = torch.max(blue_logit, 1)
                     blue_correct += (predicted == blue_target).sum().item()
-                    
-                    # 计算Top-2准确率
-                    _, top2_indices = torch.topk(blue_logit, 2, dim=1)
-                    for j in range(X_batch.size(0)):
-                        if blue_target[j].item() in top2_indices[j]:
-                            blue_top2_correct += 1
                 
                 # 总损失
                 total_batch_loss = red_loss + blue_loss
@@ -913,22 +863,11 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         red_accuracy = red_correct / (total_samples * self.red_count)
         blue_accuracy = blue_correct / (total_samples * self.blue_count)
         
-        # 计算额外的评估指标
-        red_top3_accuracy = red_top3_correct / (total_samples * self.red_count)
-        blue_top2_accuracy = blue_top2_correct / (total_samples * self.blue_count)
-        red_position_accuracy = [pos_correct / total_samples for pos_correct in red_position_correct]
-        
-        # 记录额外的评估指标
-        self.log(f"验证集红球Top-3准确率: {red_top3_accuracy:.4f}")
-        self.log(f"验证集蓝球Top-2准确率: {blue_top2_accuracy:.4f}")
-        for i, acc in enumerate(red_position_accuracy):
-            self.log(f"验证集红球位置{i+1}准确率: {acc:.4f}")
-        
         return avg_loss, red_accuracy, blue_accuracy
     
-    def predict(self, recent_data=None, num_predictions=1, temperature=0.8, top_k=None, return_probs=False, **kwargs):
+    def predict(self, recent_data=None, num_predictions=1, temperature=1.0, top_k=None, return_probs=False, **kwargs):
         """
-        预测彩票号码 - 优化的实现
+        预测彩票号码 - 简化版实现
         
         参数:
             recent_data: 最近的数据，用于预测
@@ -982,19 +921,8 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                                 row_features.append(df.iloc[-(self.feature_window-j)][col])
                             features.append(row_features)
                         
-                        # 转换为numpy数组并标准化
-                        X_data = np.array([features])
-                        X_reshaped = X_data.reshape(X_data.shape[0], -1)
-                        
-                        # 使用保存的缩放器进行标准化
-                        if hasattr(self, 'scalers') and 'X' in self.scalers:
-                            X_scaled = self.scalers['X'].transform(X_reshaped)
-                        else:
-                            # 如果没有缩放器，直接使用原始数据
-                            X_scaled = X_reshaped
-                            self.log("警告: 未找到特征缩放器，使用原始数据进行预测")
-                        
-                        input_data = X_scaled.reshape(1, self.feature_window, self.input_size)
+                        # 转换为numpy数组
+                        input_data = np.array([features])
                     else:
                         input_data = recent_data
                 
@@ -1012,44 +940,33 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 batch_red_probs = []
                 batch_blue_probs = []
                 
-                # 红球预测（使用自适应温度采样增加多样性）
+                # 红球预测
                 for i, red_logit in enumerate(outputs['red_logits']):
-                    # 前面的球使用较低的温度（更确定），后面的球使用较高的温度（更随机）
-                    position_temp = temperature * (0.8 + i * 0.1)  # 温度从0.8*temperature逐渐增加
-                    position_temp = min(position_temp, temperature * 1.5)  # 最大不超过1.5倍基础温度
-                    
                     # 应用温度缩放
-                    scaled_logits = red_logit / position_temp
+                    scaled_logits = red_logit / temperature
                     probabilities = F.softmax(scaled_logits, dim=1)
                     batch_red_probs.append(probabilities.cpu().numpy())
                     
                     if top_k is not None:
                         # 只保留top_k个概率最高的球
                         top_k_probs, top_k_indices = torch.topk(probabilities, k=min(top_k, probabilities.size(1)), dim=1)
-                        # 记录置信度 - 选中概率与第二高概率的比值
-                        if top_k >= 2:
-                            confidence = top_k_probs[:, 0] / (top_k_probs[:, 1] + 1e-6)
-                        else:
-                            confidence = top_k_probs[:, 0]
+                        # 记录置信度
+                        confidence = top_k_probs[:, 0]
                         
-                        # 重新归一化概率
-                        top_k_probs = top_k_probs / top_k_probs.sum(dim=1, keepdim=True)
                         # 采样
-                        sampled_indices = torch.multinomial(top_k_probs, 1)
-                        predicted = top_k_indices.gather(1, sampled_indices).squeeze().item()
+                        predicted = top_k_indices[:, 0].item()  # 选择概率最高的
                     else:
                         # 直接采样
                         predicted = torch.multinomial(probabilities, 1).squeeze().item()
-                        # 记录置信度 - 选中号码的概率
+                        # 记录置信度
                         confidence = probabilities[0, predicted].item()
                     
                     red_numbers.append(predicted + 1)  # 转换为1-based索引
                     red_confidences.append(confidence.item() if isinstance(confidence, torch.Tensor) else confidence)
                 
-                # 蓝球预测（使用较低的温度，因为通常蓝球更重要）
+                # 蓝球预测
                 for i, blue_logit in enumerate(outputs['blue_logits']):
-                    blue_temp = temperature * 0.9  # 蓝球使用较低的温度
-                    scaled_logits = blue_logit / blue_temp
+                    scaled_logits = blue_logit / temperature
                     probabilities = F.softmax(scaled_logits, dim=1)
                     batch_blue_probs.append(probabilities.cpu().numpy())
                     
@@ -1057,16 +974,10 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                         # 只保留top_k个概率最高的球
                         top_k_probs, top_k_indices = torch.topk(probabilities, k=min(top_k, probabilities.size(1)), dim=1)
                         # 记录置信度
-                        if top_k >= 2:
-                            confidence = top_k_probs[:, 0] / (top_k_probs[:, 1] + 1e-6)
-                        else:
-                            confidence = top_k_probs[:, 0]
+                        confidence = top_k_probs[:, 0]
                         
-                        # 重新归一化概率
-                        top_k_probs = top_k_probs / top_k_probs.sum(dim=1, keepdim=True)
                         # 采样
-                        sampled_indices = torch.multinomial(top_k_probs, 1)
-                        predicted = top_k_indices.gather(1, sampled_indices).squeeze().item()
+                        predicted = top_k_indices[:, 0].item()  # 选择概率最高的
                     else:
                         # 直接采样
                         predicted = torch.multinomial(probabilities, 1).squeeze().item()
@@ -1076,8 +987,8 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                     blue_numbers.append(predicted + 1)  # 转换为1-based索引
                     blue_confidences.append(confidence.item() if isinstance(confidence, torch.Tensor) else confidence)
                 
-                # 确保红球号码唯一，同时更新置信度
-                red_numbers, red_confidences = self._ensure_unique_red_numbers_with_confidence(red_numbers, red_confidences)
+                # 确保红球号码唯一
+                red_numbers = self._ensure_unique_red_numbers(red_numbers)
                 
                 # 对红球和蓝球号码进行排序（从小到大）
                 red_numbers.sort()
@@ -1118,7 +1029,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
     def _ensure_unique_red_numbers_with_confidence(self, red_numbers, confidences=None):
         """
-        确保红球号码唯一，同时更新置信度
+        确保红球号码唯一，同时更新置信度 - 简化版
         
         参数:
             red_numbers: 红球号码列表
@@ -1127,43 +1038,25 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         返回:
             唯一的红球号码列表和更新后的置信度列表
         """
-        if confidences is None:
-            confidences = [1.0] * len(red_numbers)
-            
-        # 创建号码-置信度对，并按置信度降序排序
-        num_conf_pairs = sorted(zip(red_numbers, confidences), key=lambda x: x[1], reverse=True)
+        # 直接调用基础版本的方法，不再单独处理置信度
+        unique_numbers = self._ensure_unique_red_numbers(red_numbers)
         
-        unique_numbers = []
-        updated_confidences = []
-        used_numbers = set()
-        
-        # 首先处理高置信度的号码
-        for num, conf in num_conf_pairs:
-            if num not in used_numbers:
-                unique_numbers.append(num)
-                updated_confidences.append(conf)
-                used_numbers.add(num)
-            else:
-                # 找一个未使用的号码，置信度降低50%
-                for candidate in range(1, self.red_range + 1):
-                    if candidate not in used_numbers:
-                        unique_numbers.append(candidate)
-                        updated_confidences.append(conf * 0.5)  # 降低置信度
-                        used_numbers.add(candidate)
-                        break
-        
-        # 按原始顺序重新排列
-        original_order = list(range(len(red_numbers)))
-        ordered_pairs = sorted(zip(original_order, unique_numbers, updated_confidences), key=lambda x: x[0])
-        
-        ordered_numbers = [pair[1] for pair in ordered_pairs]
-        ordered_confidences = [pair[2] for pair in ordered_pairs]
-        
-        return ordered_numbers, ordered_confidences
+        # 如果需要置信度，则创建一个简单的置信度列表
+        if confidences is not None:
+            # 保持原始置信度，对于替换的号码使用默认值0.5
+            updated_confidences = []
+            for i, num in enumerate(unique_numbers):
+                if i < len(confidences) and num == red_numbers[i]:
+                    updated_confidences.append(confidences[i])
+                else:
+                    updated_confidences.append(0.5)
+            return unique_numbers, updated_confidences
+        else:
+            return unique_numbers, [0.5] * len(unique_numbers)
     
     def save_model(self, filepath, save_optimizer=True):
         """
-        保存模型 - 优化的实现
+        保存模型 - 简化版实现
         
         参数:
             filepath: 保存模型的文件路径
@@ -1188,7 +1081,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                     'learning_rate': self.learning_rate,
                     'weight_decay': self.weight_decay,
                     'grad_clip_value': self.grad_clip_value,
-                    'model_version': '2.0',  # 添加版本信息
+                    'model_version': '2.1',  # 更新版本信息为简化版
                     'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 },
                 'red_freq': self.red_freq,
@@ -1196,33 +1089,26 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 'is_trained': self.is_trained
             }
             
-            # 可选保存优化器和调度器状态
-            if save_optimizer:
-                model_data['optimizer_state_dict'] = self.optimizer.state_dict() if self.optimizer else None
-                model_data['scheduler_state_dict'] = self.scheduler.state_dict() if self.scheduler else None
+            # 可选保存优化器状态
+            if save_optimizer and self.optimizer:
+                model_data['optimizer_state_dict'] = self.optimizer.state_dict()
             
             if hasattr(self, '_last_sequence'):
                 model_data['last_sequence'] = self._last_sequence
             
-            # 使用临时文件保存，然后重命名，避免保存过程中断导致文件损坏
-            temp_filepath = filepath + ".tmp"
-            torch.save(model_data, temp_filepath)
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            os.rename(temp_filepath, filepath)
+            # 直接保存模型
+            torch.save(model_data, filepath)
             
             self.log(f"模型已保存到: {filepath}")
             return True
             
         except Exception as e:
             self.log(f"保存模型时发生错误: {str(e)}")
-            import traceback
-            self.log(traceback.format_exc())
             return False
     
     def load_model(self, filepath, strict=False):
         """
-        加载模型 - 优化的实现
+        加载模型 - 简化版实现
         
         参数:
             filepath: 模型文件路径
@@ -1234,73 +1120,31 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 self.log(f"模型文件不存在: {filepath}")
                 return False
                 
+            # 设置weights_only=False以兼容PyTorch 2.6+
             model_data = torch.load(filepath, map_location=self.device, weights_only=False)
             
             # 检查模型参数是否匹配
             params = model_data['model_params']
             mismatch = False
-            mismatch_params = []
             
             # 检查关键参数
-            critical_params = ['lottery_type', 'feature_window']
-            for param in critical_params:
-                if param in params and getattr(self, param) != params[param]:
-                    mismatch = True
-                    mismatch_params.append(f"{param}: 模型={params[param]}, 当前={getattr(self, param)}")
-            
-            # 检查非关键参数
-            non_critical_params = ['hidden_size', 'num_layers', 'dropout', 'bidirectional', 'use_attention']
-            for param in non_critical_params:
-                if param in params and getattr(self, param) != params[param]:
-                    mismatch_params.append(f"{param}: 模型={params[param]}, 当前={getattr(self, param)}")
-            
-            if mismatch and strict:
-                self.log(f"错误：加载的模型参数与当前模型不匹配: {', '.join(mismatch_params)}")
-                return False
-            elif mismatch:
-                self.log(f"警告：加载的模型参数与当前模型不完全匹配: {', '.join(mismatch_params)}")
-            
-            # 重建网络
-            if mismatch and not strict:
-                self.__init__(
-                    lottery_type=params['lottery_type'],
-                    feature_window=params['feature_window'],
-                    log_callback=self.log_callback,
-                    use_gpu=self.use_gpu,
-                    hidden_size=params['hidden_size'],
-                    num_layers=params['num_layers'],
-                    dropout=params['dropout'],
-                    bidirectional=params['bidirectional'],
-                    use_attention=params['use_attention'],
-                    learning_rate=params['learning_rate'],
-                    weight_decay=params['weight_decay']
-                )
+            if params['lottery_type'] != self.lottery_type or params['feature_window'] != self.feature_window:
+                mismatch = True
+                self.log(f"警告：关键参数不匹配 - lottery_type: {params['lottery_type']} vs {self.lottery_type}, feature_window: {params['feature_window']} vs {self.feature_window}")
+                
+                if strict:
+                    self.log("错误：关键参数不匹配且strict=True，无法加载模型")
+                    return False
             
             # 加载模型状态
-            missing_keys, unexpected_keys = self.load_state_dict(model_data['model_state_dict'], strict=not mismatch)
-            if missing_keys:
-                self.log(f"警告：模型缺少以下键: {missing_keys}")
-            if unexpected_keys:
-                self.log(f"警告：模型包含意外的键: {unexpected_keys}")
+            self.load_state_dict(model_data['model_state_dict'], strict=False)
             
             # 加载优化器状态
-            if 'optimizer_state_dict' in model_data and model_data['optimizer_state_dict'] is not None:
+            if 'optimizer_state_dict' in model_data and model_data['optimizer_state_dict'] is not None and self.optimizer:
                 try:
                     self.optimizer.load_state_dict(model_data['optimizer_state_dict'])
-                    # 确保优化器状态在正确的设备上
-                    for state in self.optimizer.state.values():
-                        for k, v in state.items():
-                            if isinstance(v, torch.Tensor):
-                                state[k] = v.to(self.device)
                 except Exception as e:
                     self.log(f"警告：加载优化器状态时出错: {str(e)}")
-            
-            # 加载调度器状态
-            if 'scheduler_state_dict' in model_data and model_data['scheduler_state_dict'] is not None and self.scheduler is not None:
-                try:
-                    self.scheduler.load_state_dict(model_data['scheduler_state_dict'])
-                except Exception as e:
-                    self.log(f"警告：加载学习率调度器状态时出错: {str(e)}")
             
             # 加载其他状态
             self.training_history = model_data['training_history']
@@ -1320,13 +1164,11 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             
         except Exception as e:
             self.log(f"加载模型时发生错误: {str(e)}")
-            import traceback
-            self.log(traceback.format_exc())
             return False
     
     def get_model_info(self, include_history=False):
         """
-        获取模型信息 - 优化的实现
+        获取模型信息 - 简化版实现
         
         参数:
             include_history: 是否包含训练历史，默认为False
@@ -1335,20 +1177,16 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         
         info = {
-            'model_type': 'Enhanced LSTM TimeStep',
+            'model_type': 'Basic LSTM TimeStep',
             'lottery_type': self.lottery_type,
             'total_parameters': total_params,
             'trainable_parameters': trainable_params,
             'hidden_size': self.hidden_size,
             'num_layers': self.num_layers,
             'feature_window': self.feature_window,
-            'use_attention': self.use_attention,
-            'bidirectional': self.bidirectional,
             'device': str(self.device),
             'is_trained': self.is_trained,
-            'grad_clip_value': self.grad_clip_value,
-            'learning_rate': self.learning_rate,
-            'weight_decay': self.weight_decay
+            'learning_rate': self.learning_rate
         }
         
         if include_history and hasattr(self, 'training_history') and self.training_history:
@@ -1358,14 +1196,14 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
     def evaluate(self, test_data, batch_size=32):
         """
-        评估模型在测试数据上的性能
+        评估模型在测试数据上的性能 - 简化版实现
         
         参数:
             test_data: 测试数据
             batch_size: 批次大小
             
         返回:
-            包含各种评估指标的字典
+            包含基本评估指标的字典
         """
         if not self.is_trained:
             self.log("警告：模型尚未训练，评估结果可能不准确")
@@ -1393,9 +1231,6 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         total_loss = 0.0
         red_correct = 0
         blue_correct = 0
-        red_top3_correct = 0
-        blue_top2_correct = 0
-        red_position_correct = [0] * self.red_count
         total_samples = 0
         
         # 预测和真实值
@@ -1418,20 +1253,12 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 
                 # 红球损失和准确率
                 for i, (red_logit, red_target) in enumerate(zip(outputs['red_logits'], red_targets)):
-                    loss = self.criterion(red_logit, red_target, self.red_freq)
+                    loss = self.criterion(red_logit, red_target)
                     batch_loss += loss
                     
                     # 计算准确率
                     _, predicted = torch.max(red_logit, 1)
-                    batch_correct = (predicted == red_target).sum().item()
-                    red_correct += batch_correct
-                    red_position_correct[i] += batch_correct
-                    
-                    # 计算Top-3准确率
-                    _, top3_indices = torch.topk(red_logit, 3, dim=1)
-                    for j in range(X_batch.size(0)):
-                        if red_target[j].item() in top3_indices[j]:
-                            red_top3_correct += 1
+                    red_correct += (predicted == red_target).sum().item()
                     
                     # 收集预测和目标
                     batch_red_preds.append(predicted.cpu().numpy())
@@ -1442,18 +1269,12 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 batch_blue_targets = []
                 
                 for i, (blue_logit, blue_target) in enumerate(zip(outputs['blue_logits'], blue_targets)):
-                    loss = self.criterion(blue_logit, blue_target, self.blue_freq)
+                    loss = self.criterion(blue_logit, blue_target)
                     batch_loss += loss
                     
                     # 计算准确率
                     _, predicted = torch.max(blue_logit, 1)
                     blue_correct += (predicted == blue_target).sum().item()
-                    
-                    # 计算Top-2准确率
-                    _, top2_indices = torch.topk(blue_logit, 2, dim=1)
-                    for j in range(X_batch.size(0)):
-                        if blue_target[j].item() in top2_indices[j]:
-                            blue_top2_correct += 1
                     
                     # 收集预测和目标
                     batch_blue_preds.append(predicted.cpu().numpy())
@@ -1477,79 +1298,44 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         avg_loss = total_loss / len(test_loader) if len(test_loader) > 0 else float('inf')
         red_accuracy = red_correct / (total_samples * self.red_count) if total_samples > 0 else 0
         blue_accuracy = blue_correct / (total_samples * self.blue_count) if total_samples > 0 else 0
-        red_top3_accuracy = red_top3_correct / (total_samples * self.red_count) if total_samples > 0 else 0
-        blue_top2_accuracy = blue_top2_correct / (total_samples * self.blue_count) if total_samples > 0 else 0
-        red_position_accuracy = [pos_correct / total_samples for pos_correct in red_position_correct] if total_samples > 0 else [0] * self.red_count
-        
-        # 计算完全匹配率（所有球都预测正确）
-        exact_matches = 0
-        for pred, target in zip(all_predictions, all_targets):
-            if pred[0] == target[0] and pred[1] == target[1]:
-                exact_matches += 1
-        exact_match_rate = exact_matches / total_samples if total_samples > 0 else 0
-        
-        # 计算部分匹配率
-        red_matches = 0
-        blue_matches = 0
-        for pred, target in zip(all_predictions, all_targets):
-            if pred[0] == target[0]:
-                red_matches += 1
-            if pred[1] == target[1]:
-                blue_matches += 1
-        
-        red_match_rate = red_matches / total_samples if total_samples > 0 else 0
-        blue_match_rate = blue_matches / total_samples if total_samples > 0 else 0
         
         # 记录评估结果
         self.log(f"测试集损失: {avg_loss:.4f}")
         self.log(f"测试集红球准确率: {red_accuracy:.4f}")
         self.log(f"测试集蓝球准确率: {blue_accuracy:.4f}")
-        self.log(f"测试集红球Top-3准确率: {red_top3_accuracy:.4f}")
-        self.log(f"测试集蓝球Top-2准确率: {blue_top2_accuracy:.4f}")
-        self.log(f"测试集完全匹配率: {exact_match_rate:.4f}")
-        self.log(f"测试集红球完全匹配率: {red_match_rate:.4f}")
-        self.log(f"测试集蓝球完全匹配率: {blue_match_rate:.4f}")
-        
-        for i, acc in enumerate(red_position_accuracy):
-            self.log(f"测试集红球位置{i+1}准确率: {acc:.4f}")
         
         # 返回评估结果
         return {
             'loss': avg_loss,
             'red_accuracy': red_accuracy,
             'blue_accuracy': blue_accuracy,
-            'red_top3_accuracy': red_top3_accuracy,
-            'blue_top2_accuracy': blue_top2_accuracy,
-            'red_position_accuracy': red_position_accuracy,
-            'exact_match_rate': exact_match_rate,
-            'red_match_rate': red_match_rate,
-            'blue_match_rate': blue_match_rate,
             'total_samples': total_samples,
             'predictions': all_predictions,
             'targets': all_targets
         }
     
-    def plot_training_history(self, save_path=None, show=True, figsize=(12, 18)):
+    def plot_training_history(self, save_path=None, show=True, figsize=(12, 8)):
         """
-        绘制训练历史 - 优化的实现
+        绘制训练历史曲线 - 基础版
         
         参数:
-            save_path: 保存图形的路径，默认为None
-            show: 是否显示图形，默认为True
-            figsize: 图形大小，默认为(12, 18)
+            save_path (str, optional): 保存图像的路径
+            show (bool, optional): 是否显示图像
+            figsize (tuple, optional): 图像大小
+            
+        返回:
+            bool: 是否成功绘制
         """
         try:
             import matplotlib.pyplot as plt
-            import numpy as np
-            from matplotlib.gridspec import GridSpec
             import os
             
             # 检查训练历史是否存在
             if not hasattr(self, 'training_history') or not self.training_history or not self.training_history.get('loss'):
-                self.log("警告：没有训练历史可供绘制")
+                self.log("没有训练历史可供绘制")
                 return False
             
-            # 提取历史数据
+            # 提取历史数据 - 简化版
             epochs = range(1, len(self.training_history['loss']) + 1)
             train_losses = [h['train'] for h in self.training_history['loss']]
             val_losses = [h['val'] for h in self.training_history['loss']] if 'val' in self.training_history['loss'][0] else None
@@ -1562,146 +1348,70 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             
             has_val = val_losses is not None
             
-            # 创建图形 - 使用GridSpec实现更灵活的布局
-            fig = plt.figure(figsize=figsize)
-            gs = GridSpec(4, 2, figure=fig)
+            # 创建2x2的图形布局
+            fig, axs = plt.subplots(2, 2, figsize=figsize)
             
-            # 设置全局样式
-            plt.style.use('seaborn-v0_8-darkgrid' if 'seaborn-v0_8-darkgrid' in plt.style.available else 'seaborn-darkgrid')
-            colors = ['#2C3E50', '#E74C3C', '#3498DB', '#2ECC71', '#F39C12']
-            
-            # 1. 损失曲线 - 左上角，占据两行
-            ax_loss = fig.add_subplot(gs[0:2, 0])
-            ax_loss.plot(epochs, train_losses, color=colors[0], marker='o', linestyle='-', markersize=3, label='训练损失')
+            # 1. 损失曲线 - 左上
+            axs[0, 0].plot(epochs, train_losses, 'b-', label='训练损失')
             if has_val:
-                ax_loss.plot(epochs, val_losses, color=colors[1], marker='s', linestyle='--', markersize=3, label='验证损失')
+                axs[0, 0].plot(epochs, val_losses, 'r--', label='验证损失')
+            axs[0, 0].set_title('损失曲线')
+            axs[0, 0].set_xlabel('Epoch')
+            axs[0, 0].set_ylabel('Loss')
+            axs[0, 0].legend()
+            axs[0, 0].grid(True)
             
-            # 添加最小值标记
+            # 2. 红球准确率 - 右上
+            axs[0, 1].plot(epochs, train_red_acc, 'b-', label='训练红球准确率')
             if has_val:
-                min_val_loss = min(val_losses)
-                min_epoch = val_losses.index(min_val_loss) + 1
-                ax_loss.scatter(min_epoch, min_val_loss, color='red', s=100, zorder=5, alpha=0.8, label=f'最小验证损失: {min_val_loss:.4f} (Epoch {min_epoch})')
+                axs[0, 1].plot(epochs, val_red_acc, 'r--', label='验证红球准确率')
+            axs[0, 1].set_title('红球准确率')
+            axs[0, 1].set_xlabel('Epoch')
+            axs[0, 1].set_ylabel('Accuracy')
+            axs[0, 1].legend()
+            axs[0, 1].grid(True)
             
-            ax_loss.set_title('损失曲线', fontsize=14, fontweight='bold')
-            ax_loss.set_xlabel('Epoch', fontsize=12)
-            ax_loss.set_ylabel('Loss', fontsize=12)
-            ax_loss.legend(loc='upper right', fontsize=10)
-            ax_loss.grid(True, linestyle='--', alpha=0.7)
-            
-            # 2. 红球准确率 - 右上角
-            ax_red = fig.add_subplot(gs[0, 1])
-            ax_red.plot(epochs, train_red_acc, color=colors[2], marker='o', linestyle='-', markersize=3, label='训练红球准确率')
+            # 3. 蓝球准确率 - 左下
+            axs[1, 0].plot(epochs, train_blue_acc, 'b-', label='训练蓝球准确率')
             if has_val:
-                ax_red.plot(epochs, val_red_acc, color=colors[3], marker='s', linestyle='--', markersize=3, label='验证红球准确率')
+                axs[1, 0].plot(epochs, val_blue_acc, 'r--', label='验证蓝球准确率')
+            axs[1, 0].set_title('蓝球准确率')
+            axs[1, 0].set_xlabel('Epoch')
+            axs[1, 0].set_ylabel('Accuracy')
+            axs[1, 0].legend()
+            axs[1, 0].grid(True)
             
-            # 添加最大值标记
-            if has_val:
-                max_val_red_acc = max(val_red_acc)
-                max_epoch = val_red_acc.index(max_val_red_acc) + 1
-                ax_red.scatter(max_epoch, max_val_red_acc, color='green', s=100, zorder=5, alpha=0.8, label=f'最高验证准确率: {max_val_red_acc:.4f}')
-            
-            ax_red.set_title('红球准确率', fontsize=14, fontweight='bold')
-            ax_red.set_xlabel('Epoch', fontsize=12)
-            ax_red.set_ylabel('Accuracy', fontsize=12)
-            ax_red.legend(loc='lower right', fontsize=10)
-            ax_red.grid(True, linestyle='--', alpha=0.7)
-            
-            # 3. 蓝球准确率 - 右中
-            ax_blue = fig.add_subplot(gs[1, 1])
-            ax_blue.plot(epochs, train_blue_acc, color=colors[3], marker='o', linestyle='-', markersize=3, label='训练蓝球准确率')
-            if has_val:
-                ax_blue.plot(epochs, val_blue_acc, color=colors[4], marker='s', linestyle='--', markersize=3, label='验证蓝球准确率')
-            
-            # 添加最大值标记
-            if has_val:
-                max_val_blue_acc = max(val_blue_acc)
-                max_epoch = val_blue_acc.index(max_val_blue_acc) + 1
-                ax_blue.scatter(max_epoch, max_val_blue_acc, color='green', s=100, zorder=5, alpha=0.8, label=f'最高验证准确率: {max_val_blue_acc:.4f}')
-            
-            ax_blue.set_title('蓝球准确率', fontsize=14, fontweight='bold')
-            ax_blue.set_xlabel('Epoch', fontsize=12)
-            ax_blue.set_ylabel('Accuracy', fontsize=12)
-            ax_blue.legend(loc='lower right', fontsize=10)
-            ax_blue.grid(True, linestyle='--', alpha=0.7)
-            
-            # 4. 组合准确率 - 左下
-            ax_combined = fig.add_subplot(gs[2, 0])
-            combined_train_acc = [0.7 * r + 0.3 * b for r, b in zip(train_red_acc, train_blue_acc)]
-            ax_combined.plot(epochs, combined_train_acc, color=colors[0], marker='o', linestyle='-', markersize=3, label='训练组合准确率')
-            
-            if has_val:
-                combined_val_acc = [0.7 * r + 0.3 * b for r, b in zip(val_red_acc, val_blue_acc)]
-                ax_combined.plot(epochs, combined_val_acc, color=colors[1], marker='s', linestyle='--', markersize=3, label='验证组合准确率')
-                
-                # 添加最大值标记
-                max_val_combined_acc = max(combined_val_acc)
-                max_epoch = combined_val_acc.index(max_val_combined_acc) + 1
-                ax_combined.scatter(max_epoch, max_val_combined_acc, color='green', s=100, zorder=5, alpha=0.8, label=f'最高组合准确率: {max_val_combined_acc:.4f}')
-            
-            ax_combined.set_title('组合准确率 (红球0.7 + 蓝球0.3)', fontsize=14, fontweight='bold')
-            ax_combined.set_xlabel('Epoch', fontsize=12)
-            ax_combined.set_ylabel('Accuracy', fontsize=12)
-            ax_combined.legend(loc='lower right', fontsize=10)
-            ax_combined.grid(True, linestyle='--', alpha=0.7)
-            
-            # 5. 学习率变化 - 右下
-            if hasattr(self, 'lr_history') and self.lr_history:
-                ax_lr = fig.add_subplot(gs[2, 1])
-                ax_lr.plot(epochs, self.lr_history, color=colors[4], marker='o', linestyle='-', markersize=3)
-                ax_lr.set_title('学习率变化', fontsize=14, fontweight='bold')
-                ax_lr.set_xlabel('Epoch', fontsize=12)
-                ax_lr.set_ylabel('Learning Rate', fontsize=12)
-                ax_lr.grid(True, linestyle='--', alpha=0.7)
-                # 使用对数刻度更好地显示学习率变化
-                ax_lr.set_yscale('log')
-            
-            # 6. 模型信息 - 底部，跨越两列
-            ax_info = fig.add_subplot(gs[3, :])
-            ax_info.axis('off')  # 不显示坐标轴
-            
-            # 收集模型信息
+            # 4. 模型信息 - 右下
+            axs[1, 1].axis('off')  # 不显示坐标轴
             model_info = self.get_model_info()
             info_text = (
                 f"模型类型: {model_info['model_type']}\n"
-                f"隐藏层大小: {model_info.get('hidden_size', 'N/A')}, 层数: {model_info.get('num_layers', 'N/A')}, "
-                f"双向: {model_info.get('bidirectional', False)}, 注意力: {model_info.get('use_attention', False)}\n"
-                f"Dropout: {model_info.get('dropout', 'N/A')}, 学习率: {model_info.get('learning_rate', 'N/A')}, "
-                f"权重衰减: {model_info.get('weight_decay', 'N/A')}, 梯度裁剪: {getattr(self, 'grad_clip_value', 'N/A')}\n"
-                f"参数总数: {model_info.get('total_parameters', 0):,}, 可训练参数: {model_info.get('trainable_parameters', 0):,}\n"
-                f"设备: {model_info.get('device', 'N/A')}, 训练状态: {'已训练' if model_info.get('is_trained', False) else '未训练'}"
+                f"隐藏层大小: {model_info.get('hidden_size', 'N/A')}, 层数: {model_info.get('num_layers', 'N/A')}\n"
+                f"Dropout: {model_info.get('dropout', 'N/A')}, 学习率: {model_info.get('learning_rate', 'N/A')}\n"
+                f"参数总数: {model_info.get('total_parameters', 0):,}"
             )
             
-            # 添加训练结果摘要
+            # 添加简单的训练摘要
             if has_val:
                 best_epoch = val_losses.index(min(val_losses)) + 1
-                final_val_loss = val_losses[-1]
-                final_val_red_acc = val_red_acc[-1]
-                final_val_blue_acc = val_blue_acc[-1]
-                
                 summary_text = (
                     f"\n\n训练摘要:\n"
-                    f"最佳Epoch: {best_epoch}, 最终验证损失: {final_val_loss:.4f}\n"
-                    f"最终红球准确率: {final_val_red_acc:.4f}, 最终蓝球准确率: {final_val_blue_acc:.4f}\n"
-                    f"最高红球准确率: {max(val_red_acc):.4f}, 最高蓝球准确率: {max(val_blue_acc):.4f}"
+                    f"最佳Epoch: {best_epoch}, 最终验证损失: {val_losses[-1]:.4f}"
                 )
                 info_text += summary_text
             
-            ax_info.text(0.5, 0.5, info_text, ha='center', va='center', fontsize=12, 
-                        bbox=dict(boxstyle="round,pad=1", facecolor="#f0f0f0", alpha=0.8, edgecolor="#cccccc"))
+            axs[1, 1].text(0.5, 0.5, info_text, ha='center', va='center', fontsize=10,
+                          bbox=dict(boxstyle="round", facecolor="#f0f0f0"))
             
             # 调整布局
             plt.tight_layout()
-            fig.subplots_adjust(hspace=0.3, wspace=0.3)
-            
-            # 添加总标题
-            fig.suptitle('LSTM时间步模型训练历史', fontsize=16, fontweight='bold', y=0.98)
-            plt.subplots_adjust(top=0.95)
+            fig.suptitle('LSTM时间步模型训练历史 (基础版)', fontsize=14)
+            plt.subplots_adjust(top=0.9)
             
             # 保存图形
             if save_path:
-                # 确保目录存在
                 os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
+                plt.savefig(save_path, dpi=200)
                 self.log(f"训练历史图已保存到 {save_path}")
             
             # 显示图形
@@ -1714,8 +1424,6 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 
         except Exception as e:
             self.log(f"绘制训练历史时发生错误: {str(e)}")
-            import traceback
-            self.log(traceback.format_exc())
             return False
     
     def load_models(self):

@@ -8,6 +8,13 @@ import torch.nn as nn
 from typing import Optional, Tuple, List, Any
 from .base import BaseLotteryModel
 
+# 添加安全的全局变量，以允许numpy._core.multiarray._reconstruct
+try:
+    torch.serialization.add_safe_globals(['numpy._core.multiarray._reconstruct'])
+except (AttributeError, ImportError):
+    # 兼容旧版PyTorch
+    pass
+
 
 class CRF(nn.Module):
     """
@@ -394,6 +401,7 @@ class LstmCRFModel(BaseLotteryModel, nn.Module):
         Args:
             filepath: Path to load the model from
         """
-        checkpoint = torch.load(filepath, map_location='cpu')
+        # 设置weights_only=False以兼容PyTorch 2.6+
+        checkpoint = torch.load(filepath, map_location='cpu', weights_only=False)
         self.load_state_dict(checkpoint['model_state_dict'])
         self.is_trained = checkpoint.get('is_trained', False)
