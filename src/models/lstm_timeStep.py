@@ -166,72 +166,7 @@ class EnhancedLSTMLayer(nn.Module):
         
         return output, attention_weights
 
-class AdaptivePredictionHead(nn.Module):
-    """
-    自适应预测头，根据历史统计动态调整预测策略
-    """
-    
-    def __init__(self, input_size: int, output_size: int, dropout: float = 0.2, use_layernorm: bool = False):
-        super().__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self.use_layernorm = use_layernorm
-        
-        # 多层预测网络
-        layers = []
-        # 第一层
-        layers.append(nn.Linear(input_size, input_size * 2))
-        layers.append(nn.GELU())
-        if use_layernorm:
-            layers.append(nn.LayerNorm(input_size * 2))
-        layers.append(nn.Dropout(dropout))
-        
-        # 第二层
-        layers.append(nn.Linear(input_size * 2, input_size))
-        layers.append(nn.GELU())
-        if use_layernorm:
-            layers.append(nn.LayerNorm(input_size))
-        layers.append(nn.Dropout(dropout))
-        
-        # 输出层
-        layers.append(nn.Linear(input_size, output_size))
-        
-        self.predictor = nn.Sequential(*layers)
-        
-        # 温度参数，用于调节预测分布的锐度
-        self.temperature = nn.Parameter(torch.ones(1))
-        
-    def forward(self, x):
-        logits = self.predictor(x)
-        # 应用温度缩放
-        scaled_logits = logits / torch.clamp(self.temperature, min=0.1, max=5.0)
-        return scaled_logits
-
-class LotteryLoss(nn.Module):
-    """
-    专门为彩票预测设计的损失函数，结合交叉熵和分布约束
-    """
-    
-    def __init__(self, alpha: float = 0.8, beta: float = 0.2):
-        super().__init__()
-        self.alpha = alpha  # 交叉熵权重
-        self.beta = beta    # 分布约束权重
-        self.ce_loss = nn.CrossEntropyLoss()
-        
-    def forward(self, logits, targets, historical_freq=None):
-        # 基础交叉熵损失
-        ce_loss = self.ce_loss(logits, targets)
-        
-        # 分布约束损失（鼓励预测分布接近历史频率分布）
-        if historical_freq is not None:
-            pred_probs = F.softmax(logits, dim=-1)
-            freq_probs = F.softmax(historical_freq, dim=-1)
-            kl_loss = F.kl_div(pred_probs.log(), freq_probs, reduction='batchmean')
-        else:
-            kl_loss = 0
-            
-        total_loss = self.alpha * ce_loss + self.beta * kl_loss
-        return total_loss
+# 删除复杂的自适应预测头和专用损失函数类，简化模型架构
 
 class LSTMTimeStepModel(BaseMLModel, nn.Module):
     """
@@ -248,15 +183,22 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
     """
     
     def __init__(self, lottery_type='dlt', feature_window=10, log_callback=None, use_gpu=False,
-                 hidden_size=256, num_layers=2, dropout=0.2, bidirectional=True,
-                 use_attention=True, learning_rate=0.0005, weight_decay=1e-5):
+                 hidden_size=128, num_layers=3, dropout=0.3, bidirectional=True,
+                 use_attention=True, learning_rate=0.001, weight_decay=1e-4):
         """
-        初始化高级LSTM TimeStep模型
+        初始化优化的LSTM TimeStep模型
+        
+        参数调优策略:
+        - hidden_size: 128 (平衡性能和计算效率)
+        - num_layers: 3 (增加模型深度以提高表达能力)
+        - dropout: 0.3 (增强正则化防止过拟合)
+        - learning_rate: 0.001 (适中的学习率)
+        - weight_decay: 1e-4 (L2正则化)
         """
         BaseMLModel.__init__(self, lottery_type, feature_window, log_callback, use_gpu)
         nn.Module.__init__(self)
         
-        # 优化的模型参数 - 调整为更高效的配置
+        # 优化的模型参数
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.dropout = dropout
@@ -265,37 +207,20 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
-        # 新增训练优化参数
-        self.use_mixed_precision = True  # 使用混合精度训练加速
-        self.gradient_accumulation_steps = 4  # 梯度累积步数
-        self.label_smoothing = 0.1  # 标签平滑系数
-        self.use_focal_loss = True  # 使用Focal Loss
-        self.focal_gamma = 2.0  # Focal Loss的gamma参数
-        self.attention_heads = 12  # 增加注意力头数量
-        self.use_layer_norm = True  # 使用层归一化
-        self.use_residual = True  # 使用残差连接
-        self.use_gelu = True  # 使用GELU激活函数
-        
-        # 设备配置 - 增加MPS支持（苹果M系列芯片）
+        # 设备配置
         if use_gpu:
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
-                # 检查CUDA版本，决定是否启用TF32精度
-                if torch.cuda.get_device_capability()[0] >= 8:  # Ampere架构或更高
-                    torch.backends.cuda.matmul.allow_tf32 = True
-                    torch.backends.cudnn.allow_tf32 = True
-                    self.log("启用TF32精度加速")
+                self.log("使用CUDA设备")
             elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
                 self.device = torch.device('mps')
-                # 对于MPS，禁用混合精度训练，因为MPS不完全支持
-                self.use_mixed_precision = False
-                self.log("在MPS设备上禁用混合精度训练")
+                self.log("使用MPS设备")
             else:
                 self.device = torch.device('cpu')
-                self.use_mixed_precision = False
+                self.log("GPU不可用，使用CPU设备")
         else:
             self.device = torch.device('cpu')
-            self.use_mixed_precision = False
+            self.log("使用CPU设备")
         
         # 输入特征大小
         self.input_size = self.red_count + self.blue_count
@@ -306,52 +231,46 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         # 移动到设备
         self.to(self.device)
         
-        # 简化的优化器配置
-        self.optimizer = optim.Adam(
+        # 优化器配置 - 使用AdamW优化器
+        self.optimizer = optim.AdamW(
             self.parameters(), 
             lr=self.learning_rate, 
-            weight_decay=self.weight_decay
+            weight_decay=self.weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
         
-        # 简化的学习率调度器
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        # 学习率调度器 - 使用余弦退火
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
-            mode='min',
-            factor=0.5,
-            patience=20
+            T_max=100,
+            eta_min=1e-6
         )
         
-        # 混合精度训练的scaler - 仅在CUDA可用时使用
-        self.amp_scaler = torch.cuda.amp.GradScaler() if (self.use_mixed_precision and torch.cuda.is_available()) else None
-        
-        # 损失函数 - 使用简单的交叉熵损失
-        self.criterion = nn.CrossEntropyLoss()
+        # 损失函数
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         
         # 训练状态
         self.training_history = {'loss': [], 'red_accuracy': [], 'blue_accuracy': []}
         self.is_trained = False
         self.best_model_state = None
         
-        # 历史频率统计
-        self.red_freq = None
-        self.blue_freq = None
-        
         # 梯度裁剪值
-        self.grad_clip_value = 0.8  # 调整梯度裁剪值
+        self.grad_clip_value = 1.0
         
     def _build_network(self):
         """
-        构建精简的网络架构 - 优化训练速度
+        构建优化的网络架构
         """
-        # 输入嵌入层 - 简化为单层
+        # 输入嵌入层
         self.input_embedding = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),
-            nn.BatchNorm1d(self.hidden_size),
-            nn.ReLU(),
+            nn.LayerNorm(self.hidden_size),
+            nn.GELU(),
             nn.Dropout(self.dropout)
         )
         
-        # 简化LSTM层
+        # LSTM层
         self.lstm_layer = EnhancedLSTMLayer(
             input_size=self.hidden_size,
             hidden_size=self.hidden_size,
@@ -364,35 +283,37 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         # 计算LSTM输出大小
         lstm_output_size = self.hidden_size * 2 if self.bidirectional else self.hidden_size
         
-        # 简化的层归一化
-        self.layer_norm = nn.LayerNorm(lstm_output_size)
-        
-        # 简化的特征处理层
+        # 特征处理层
         self.feature_processor = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size),
-            nn.ReLU(),
+            nn.LayerNorm(lstm_output_size),
+            nn.GELU(),
             nn.Dropout(self.dropout)
         )
         
-        # 红球预测头 - 简化版本
+        # 红球预测头
         self.red_heads = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(lstm_output_size, self.red_range),
-                nn.LogSoftmax(dim=-1)
+                nn.Linear(lstm_output_size, lstm_output_size // 2),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(lstm_output_size // 2, self.red_range)
             )
             for _ in range(self.red_count)
         ])
         
-        # 蓝球预测头 - 简化版本
+        # 蓝球预测头
         self.blue_heads = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(lstm_output_size, self.blue_range),
-                nn.LogSoftmax(dim=-1)
+                nn.Linear(lstm_output_size, lstm_output_size // 2),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(lstm_output_size // 2, self.blue_range)
             )
             for _ in range(self.blue_count)
         ])
         
-        # 简化的全局注意力
+        # 全局注意力
         self.global_attention = nn.Sequential(
             nn.Linear(lstm_output_size, 1),
             nn.Sigmoid()
@@ -400,103 +321,51 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
     def forward(self, x):
         """
-        前向传播 - 简化版实现
+        前向传播
         """
         batch_size, seq_len, feature_dim = x.shape
         
-        # 确保输入特征维度与模型期望的输入维度匹配
+        # 动态调整输入维度
         if feature_dim != self.input_size:
-            self.log(f"警告: 输入特征维度 {feature_dim} 与模型期望的输入维度 {self.input_size} 不匹配")
-            # 动态调整input_size以匹配实际输入
             self.input_size = feature_dim
-            
-            # 重新创建输入嵌入层的第一个线性层以匹配新的输入维度
-            old_embedding = self.input_embedding
+            # 重新创建输入嵌入层
             self.input_embedding = nn.Sequential(
                 nn.Linear(self.input_size, self.hidden_size),
-                old_embedding[1],  # 保留原有的BatchNorm1d
-                old_embedding[2],  # 保留原有的ReLU
-                old_embedding[3]   # 保留原有的Dropout
-            )
-            # 将新层移动到正确的设备上
-            self.input_embedding = self.input_embedding.to(self.device)
+                nn.LayerNorm(self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(self.dropout)
+            ).to(self.device)
         
-        # 输入嵌入 - 处理批归一化需要的维度转换
+        # 输入嵌入
         x_reshaped = x.reshape(-1, self.input_size)
-        # 先通过线性层
-        linear_out = self.input_embedding[0](x_reshaped)
-        # 然后通过批归一化层
-        bn_out = self.input_embedding[1](linear_out)
-        # 再通过激活函数和dropout
-        embedded = self.input_embedding[3](self.input_embedding[2](bn_out))
+        embedded = self.input_embedding(x_reshaped)
         embedded = embedded.reshape(batch_size, seq_len, self.hidden_size)
         
         # LSTM处理
         lstm_out, attention_weights = self.lstm_layer(embedded)
         
-        # 应用层归一化
-        normed_lstm = self.layer_norm(lstm_out)
-        
         # 特征处理
-        processed_features = self.feature_processor(normed_lstm)
+        processed_features = self.feature_processor(lstm_out)
         
-        # 简化的注意力机制
-        attention_scores = self.global_attention(processed_features)  # [batch_size, seq_len, 1]
+        # 全局注意力机制
+        attention_scores = self.global_attention(processed_features)
         attention_weights_global = F.softmax(attention_scores, dim=1)
         
-        # 加权求和得到全局特征
-        global_features = torch.sum(processed_features * attention_weights_global, dim=1)  # [batch_size, hidden_size]
+        # 加权平均池化
+        pooled_features = torch.sum(processed_features * attention_weights_global, dim=1)
         
-        # 使用最后一个时间步的特征作为序列特征
-        sequence_features = processed_features[:, -1, :]
-        
-        # 简单组合全局特征和序列特征
-        combined_features = global_features * 0.6 + sequence_features * 0.4
-        
-        # 红球预测
-        red_outputs = [head(combined_features) for head in self.red_heads]
-        
-        # 蓝球预测
-        blue_outputs = [head(combined_features) for head in self.blue_heads]
+        # 红球和蓝球预测
+        red_outputs = [head(pooled_features) for head in self.red_heads]
+        blue_outputs = [head(pooled_features) for head in self.blue_heads]
         
         return {
             'red_logits': red_outputs,
             'blue_logits': blue_outputs,
             'attention_weights': attention_weights,
-            'features': combined_features,
-            'global_attention': attention_weights_global
+            'features': pooled_features
         }
     
-    def _compute_historical_frequency(self, data):
-        """
-        计算历史号码频率
-        """
-        red_freq = torch.zeros(self.red_range)
-        blue_freq = torch.zeros(self.blue_range)
-        
-        # 统计红球频率
-        for i in range(self.red_count):
-            col_name = f'red_{i+1}'
-            if col_name in data.columns:
-                values = data[col_name].values - 1  # 转换为0-based索引
-                for val in values:
-                    if 0 <= val < self.red_range:
-                        red_freq[val] += 1
-        
-        # 统计蓝球频率
-        for i in range(self.blue_count):
-            col_name = f'blue_{i+1}'
-            if col_name in data.columns:
-                values = data[col_name].values - 1  # 转换为0-based索引
-                for val in values:
-                    if 0 <= val < self.blue_range:
-                        blue_freq[val] += 1
-        
-        # 归一化
-        red_freq = red_freq / (red_freq.sum() + 1e-8)
-        blue_freq = blue_freq / (blue_freq.sum() + 1e-8)
-        
-        return red_freq.to(self.device), blue_freq.to(self.device)
+
     
     def prepare_fibonacci_data(self, df, test_size=0.2):
         """
@@ -525,19 +394,17 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             red_cols = [col for col in df.columns if col.startswith('红球_')][:6]
             blue_cols = [col for col in df.columns if col.startswith('蓝球_')][:1]
         
-        # 基于斐波那契数列选择短期数据
-        fib_periods = [3, 5, 8, 13, 21, 34, 55]
+        # 优化的斐波那契数列选择短期数据策略
+        # 重点关注最近的短期模式，减少长期噪声
+        fib_periods = [3, 5, 8, 13, 21, 34, 55, 89, 144]  # 移除较长周期，专注短期模式
         
         # 创建特征和标签
         X_data = []
         y_red_data = []
         y_blue_data = []
         
-        # 获取最新的数据
-        latest_index = len(df) - 1
-        
         self.log(f"原始数据总期数: {len(df)}")
-        self.log(f"斐波那契周期选择: {fib_periods}")
+        self.log(f"优化的斐波那契周期选择: {fib_periods} (专注短期模式)")
         
         # 为每个斐波那契周期创建数据集
         for period in fib_periods:
@@ -653,9 +520,6 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         self.log(f"训练策略: 基于斐波那契数列的短期数据选择")
         
         try:
-            # 计算历史频率
-            self.red_freq, self.blue_freq = self._compute_historical_frequency(data)
-            
             # 准备数据 - 使用基于斐波那契数列的短期数据选择策略
             X_train, X_val, red_train_data, red_val_data, blue_train_data, blue_val_data = self.prepare_fibonacci_data(
                 data, test_size=validation_split
@@ -712,9 +576,9 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 self.training_history['red_accuracy'].append({'train': train_red_acc, 'val': val_red_acc})
                 self.training_history['blue_accuracy'].append({'train': train_blue_acc, 'val': val_blue_acc})
                 
-                # 早停检查 - 仅基于验证损失
+                # 早停检查 - 基于验证损失改善
                 improved = False
-                if val_loss < best_val_loss * 0.999:  # 损失需要改善(至少0.1%)
+                if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     improved = True
                     self.best_model_state = self.state_dict().copy()
@@ -722,8 +586,8 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 else:
                     patience_counter += 1
                 
-                # 学习率调度
-                self.scheduler.step(val_loss)
+                # 学习率调度 - 余弦退火
+                self.scheduler.step()
                 
                 # 日志输出
                 if epoch % 5 == 0 or epoch == epochs - 1 or improved:
@@ -1150,8 +1014,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                     'model_version': '2.1',  # 更新版本信息为简化版
                     'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 },
-                'red_freq': self.red_freq,
-                'blue_freq': self.blue_freq,
+
                 'is_trained': self.is_trained
             }
             
@@ -1263,8 +1126,6 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             
             # 加载其他状态
             self.training_history = model_data['training_history']
-            self.red_freq = model_data.get('red_freq')
-            self.blue_freq = model_data.get('blue_freq')
             self.is_trained = model_data.get('is_trained', False)
             
             if 'last_sequence' in model_data:
