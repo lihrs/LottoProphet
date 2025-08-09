@@ -396,7 +396,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
         # 优化的斐波那契数列选择短期数据策略
         # 重点关注最近的短期模式，减少长期噪声
-        fib_periods = [3, 5, 8, 13, 21, 34, 55, 89, 144]  # 移除较长周期，专注短期模式
+        fib_periods = [3, 5, 8, 13, 21, 34, 55]  # 移除较长周期，专注短期模式
         
         # 创建特征和标签
         X_data = []
