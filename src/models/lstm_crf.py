@@ -335,7 +335,7 @@ def sample_crf_sequences(crf_model, emissions, mask, num_samples=1, temperature=
     return all_sampled_sequences
 
 
-def process_predictions(red_predictions, blue_predictions, lottery_type, check_history=False, similarity_rules=None):
+def process_predictions(red_predictions, blue_predictions, lottery_type, check_history=True, similarity_rules=None):
     """
     处理预测结果，确保号码在有效范围内且为整数
     
@@ -430,7 +430,7 @@ def process_predictions(red_predictions, blue_predictions, lottery_type, check_h
     return prediction
 
 
-def randomize_numbers(numbers, lottery_type, check_history=False, similarity_rules=None):
+def randomize_numbers(numbers, lottery_type, check_history=True, similarity_rules=None):
     """
     为预测号码增加随机性，以产生更多样化的结果
     
