@@ -1462,12 +1462,14 @@ class CatBoostModel(BaseMLModel):
             self.log(traceback.format_exc())
             return False
     
-    def predict(self, recent_data):
+    def predict(self, recent_data, check_history=False, similarity_rules=None):
         """
         生成预测结果 - 增强优化版本
         
         Args:
             recent_data: 包含最近开奖数据的DataFrame
+            check_history: 是否检查历史相似性
+            similarity_rules: 相似性规则
             
         Returns:
             预测的红球和蓝球号码
@@ -1732,6 +1734,35 @@ class CatBoostModel(BaseMLModel):
         }
         
         self.log(f"最终预测结果: 红球 {red_predictions}, 蓝球 {blue_predictions}")
+        
+        # 检查历史相似性
+        if check_history:
+            from src.core.history_check import check_prediction_against_history, adjust_prediction_to_avoid_history
+            
+            # 组合红蓝球号码
+            prediction = red_predictions + blue_predictions
+            
+            # 检查是否与历史数据相似
+            is_similar, similarity_info = check_prediction_against_history(
+                prediction, self.lottery_type, similarity_rules
+            )
+            
+            # 如果相似，调整预测结果
+            if is_similar:
+                self.log(f"预测结果与历史数据相似: {similarity_info}")
+                adjusted_prediction = adjust_prediction_to_avoid_history(
+                    prediction, self.lottery_type, similarity_rules
+                )
+                
+                # 分离调整后的红蓝球
+                if self.lottery_type == 'dlt':
+                    red_predictions = sorted(adjusted_prediction[:5])
+                    blue_predictions = sorted(adjusted_prediction[5:])
+                else:  # ssq
+                    red_predictions = sorted(adjusted_prediction[:6])
+                    blue_predictions = sorted(adjusted_prediction[6:])
+                
+                self.log(f"调整后的预测结果: 红球={red_predictions}, 蓝球={blue_predictions}")
         
         return red_predictions, blue_predictions
     

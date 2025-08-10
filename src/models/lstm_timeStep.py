@@ -795,7 +795,7 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
         
         return avg_loss, red_accuracy, blue_accuracy
     
-    def predict(self, recent_data=None, num_predictions=1, temperature=1.0, top_k=None, return_probs=False, **kwargs):
+    def predict(self, recent_data=None, num_predictions=1, temperature=1.0, top_k=None, return_probs=False, check_history=True, similarity_rules=None, **kwargs):
         """
         预测彩票号码 - 简化版实现
         
@@ -805,6 +805,8 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             temperature: 温度参数，控制采样的随机性，越小越确定
             top_k: 只考虑概率最高的前k个选项
             return_probs: 是否返回概率分布和置信度
+            check_history: 是否检查历史数据避免重复
+            similarity_rules: 相似度规则列表，用于定义何种程度的相似需要避免
             
         返回:
             如果return_probs=False，返回预测的号码
@@ -932,6 +934,44 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                 sorted_indices_blue = sorted(range(len(blue_numbers)), key=lambda i: blue_numbers[i])
                 blue_numbers = [blue_numbers[i] for i in sorted_indices_blue]
                 blue_confidences = [blue_confidences[i] for i in sorted_indices_blue]
+                
+                # 组合完整的预测号码
+                combined_prediction = red_numbers + blue_numbers
+                
+                # 如果需要检查历史数据
+                if check_history:
+                    # 导入历史检查相关函数
+                    from src.core.history_check import check_prediction_against_history, adjust_prediction_to_avoid_history, get_default_similarity_rules
+                    
+                    # 设置默认的相似度规则
+                    if similarity_rules is None:
+                        similarity_rules = get_default_similarity_rules(self.lottery_type)
+                    
+                    # 检查预测是否与历史相似
+                    is_similar = False
+                    for rule in similarity_rules:
+                        similar, match_info = check_prediction_against_history(combined_prediction, self.lottery_type, rule)
+                        if similar:
+                            is_similar = True
+                            self.log(f"预测结果与历史相似: {combined_prediction}")
+                            break
+                    
+                    # 如果与历史相似，调整预测
+                    if is_similar:
+                        adjusted_prediction = adjust_prediction_to_avoid_history(combined_prediction, self.lottery_type, similarity_rules)
+                        self.log(f"调整后的预测结果: {adjusted_prediction}")
+                        
+                        # 分离调整后的红球和蓝球
+                        if self.lottery_type == 'dlt':
+                            red_numbers = adjusted_prediction[:5]
+                            blue_numbers = adjusted_prediction[5:]
+                        else:  # ssq
+                            red_numbers = adjusted_prediction[:6]
+                            blue_numbers = adjusted_prediction[6:]
+                        
+                        # 更新置信度（简单处理，对调整的号码使用默认置信度0.5）
+                        red_confidences = [0.5] * len(red_numbers)
+                        blue_confidences = [0.5] * len(blue_numbers)
                 
                 predictions.append((red_numbers, blue_numbers))
                 all_confidences.append((red_confidences, blue_confidences))
