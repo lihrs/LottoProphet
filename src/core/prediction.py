@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 import numpy as np
 import random
+from src.core.history_check import check_prediction_against_history, adjust_prediction_to_avoid_history, get_default_similarity_rules
 
-def process_predictions(red_predictions, blue_predictions, lottery_type):
-    """
-    处理预测结果，确保号码在有效范围内且为整数
+def process_predictions(red_predictions, blue_predictions, lottery_type, check_history=True, similarity_rules=None):
+    """处理预测结果，确保号码在有效范围内且为整数，并可选择性地检查历史数据避免重复
     :param red_predictions: list, 红球预测的类别索引
     :param blue_predictions: list, 蓝球预测的类别索引
     :param lottery_type: 'ssq' 或 'dlt'
+    :param check_history: bool, 是否检查历史数据避免重复
+    :param similarity_rules: list of dict, 相似度规则列表，用于定义何种程度的相似需要避免
     :return: list, 预测的开奖号码
     """
     if lottery_type == "dlt":
@@ -49,18 +51,40 @@ def process_predictions(red_predictions, blue_predictions, lottery_type):
     else:
         raise ValueError("不支持的彩票类型！请选择 'ssq' 或 'dlt'。")
 
+    # 组合完整的预测号码
     if lottery_type == "dlt":
-        return front_numbers + back_numbers
+        prediction = front_numbers + back_numbers
     elif lottery_type == "ssq":
-        return front_numbers + [back_number]
+        prediction = front_numbers + [back_number]
+    
+    # 如果需要检查历史数据
+    if check_history:
+        # 设置默认的相似度规则
+        if similarity_rules is None:
+            similarity_rules = get_default_similarity_rules(lottery_type)
+        
+        # 检查预测是否与历史相似
+        is_similar = False
+        for rule in similarity_rules:
+            similar, match_info = check_prediction_against_history(prediction, lottery_type, rule)
+            if similar:
+                is_similar = True
+                break
+        
+        # 如果与历史相似，调整预测
+        if is_similar:
+            prediction = adjust_prediction_to_avoid_history(prediction, lottery_type, similarity_rules)
+    
+    return prediction
 
-def randomize_numbers(numbers, lottery_type):
-    """
-    为预测号码增加随机性，以产生更多样化的结果
+def randomize_numbers(numbers, lottery_type, check_history=True, similarity_rules=None):
+    """为预测号码增加随机性，以产生更多样化的结果，并可选择性地检查历史数据避免重复
     
     Args:
         numbers: 原始预测号码列表
         lottery_type: 'ssq' 或 'dlt'
+        check_history: bool, 是否检查历史数据避免重复
+        similarity_rules: list of dict, 相似度规则列表，用于定义何种程度的相似需要避免
     
     Returns:
         处理后的号码列表
@@ -96,7 +120,7 @@ def randomize_numbers(numbers, lottery_type):
                     blue_numbers[i] = random.randint(1, 12)
                     break
         
-        return sorted(red_numbers) + sorted(blue_numbers)
+        randomized_numbers = sorted(red_numbers) + sorted(blue_numbers)
         
     elif lottery_type == "ssq":
         # 双色球: 红球6个(1-33)，蓝球1个(1-16)
@@ -121,10 +145,30 @@ def randomize_numbers(numbers, lottery_type):
             offset = random.randint(-1, 1)
             blue_number = max(1, min(16, blue_number + offset))
             
-        return sorted(red_numbers) + [blue_number]
+        randomized_numbers = sorted(red_numbers) + [blue_number]
     
     else:
         return numbers  # 未知类型，返回原始号码
+    
+    # 如果需要检查历史数据
+    if check_history:
+        # 设置默认的相似度规则
+        if similarity_rules is None:
+            similarity_rules = get_default_similarity_rules(lottery_type)
+        
+        # 检查预测是否与历史相似
+        is_similar = False
+        for rule in similarity_rules:
+            similar, match_info = check_prediction_against_history(randomized_numbers, lottery_type, rule)
+            if similar:
+                is_similar = True
+                break
+        
+        # 如果与历史相似，调整预测
+        if is_similar:
+            randomized_numbers = adjust_prediction_to_avoid_history(randomized_numbers, lottery_type, similarity_rules)
+    
+    return randomized_numbers
 
 def sample_crf_sequences(crf_model, emissions, mask, num_samples=1, temperature=1.0, top_k=0, diversity=0.0):
     """

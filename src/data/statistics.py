@@ -19,7 +19,7 @@ import traceback
 import warnings
 
 # 导入matplotlib配置
-from utils.matplotlib_config import configure_matplotlib
+from src.utils.matplotlib_config import configure_matplotlib
 
 # 忽略警告
 warnings.filterwarnings('ignore')

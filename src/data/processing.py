@@ -5,7 +5,7 @@ Author: Yang Zhao
 """
 import pandas as pd
 import matplotlib.pyplot as plt
-from data.analysis import (
+from src.data.analysis import (
     load_lottery_data, check_data_quality, calculate_statistics, 
     create_enhanced_features, plot_frequency_distribution, 
     plot_hot_cold_numbers, plot_gap_statistics, plot_patterns, 
