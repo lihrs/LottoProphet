@@ -4,8 +4,7 @@ Utility modules
 """
 
 from .model_utils import (
-    name_path, load_pytorch_model, load_resources_pytorch,
-    sample_crf_sequences
+    name_path, load_pytorch_model, load_resources_pytorch
 )
 from .threading import (
     TrainModelThread, UpdateDataThread, LogEmitter
@@ -17,7 +16,6 @@ __all__ = [
     'create_features',
     'prepare_sequences',
     'randomize_numbers',
-    'sample_crf_sequences',
     'TrainModelThread',
     'UpdateDataThread',
     'LogEmitter',

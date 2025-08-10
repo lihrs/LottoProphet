@@ -78,6 +78,13 @@ class LSTMCRF(nn.Module):
 
     def decode(self, emissions, mask=None):
         return self.crf.viterbi_decode(emissions, mask=mask)
+        
+    def get_emissions(self, x):
+        """获取发射概率矩阵"""
+        lstm_out, _ = self.lstm(x)
+        emissions = self.fc(lstm_out[:, -1])
+        emissions = emissions.view(-1, self.output_seq_length, self.output_dim)
+        return emissions
 
 def load_data(data_path):
     """加载数据"""

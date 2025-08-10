@@ -15,8 +15,8 @@ src_path = Path(__file__).parent / 'src'
 sys.path.insert(0, str(src_path))
 
 # Import after path setup
-from utils.logging import setup_logging, get_logger
-from utils.config import config
+from src.utils.logging import setup_logging, get_logger
+from src.utils.config import config
 
 def main():
     """

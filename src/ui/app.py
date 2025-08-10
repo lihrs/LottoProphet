@@ -22,7 +22,7 @@ from PyQt5.QtGui import QPixmap
 
 
 from utils.model_utils import (
-    name_path, load_resources_pytorch, sample_crf_sequences
+    name_path, load_resources_pytorch
 )
 from models.ml_models import (
     LotteryMLModels, MODEL_TYPES
@@ -30,8 +30,8 @@ from models.ml_models import (
 from utils.threading import (
     TrainModelThread, UpdateDataThread, LogEmitter
 )
-from core.prediction import (
-    process_predictions, randomize_numbers
+from models.lstm_crf import (
+    sample_crf_sequences, process_predictions, randomize_numbers, LstmCRFModel
 )
 from .theme import ThemeManager, CustomThemeDialog
 from .components import (
@@ -319,10 +319,8 @@ class LotteryPredictorApp(QMainWindow):
                         scaled_input = scaled_input.reshape(1, 10, input_dim)
                         scaled_input = torch.tensor(scaled_input, dtype=torch.float32)
 
-                        # 红球预测
-                        red_lstm_out = red_model.lstm(scaled_input)
-                        red_fc_out = red_model.fc(red_lstm_out[0])
-                        red_emissions = red_fc_out.view(-1, red_model.output_seq_length, red_model.output_dim)
+                        # 获取红球模型的发射概率
+                        red_emissions = red_model.get_emissions(scaled_input)
                         red_mask = torch.ones(red_emissions.size()[:2], dtype=torch.uint8)
                         red_sampled_sequences = sample_crf_sequences(red_model.crf, red_emissions, red_mask, num_samples=1, temperature=1.0)
 
@@ -331,10 +329,8 @@ class LotteryPredictorApp(QMainWindow):
 
                         red_predicted = red_sampled_sequences[0]
 
-                        # 蓝球预测
-                        blue_lstm_out = blue_model.lstm(scaled_input)
-                        blue_fc_out = blue_model.fc(blue_lstm_out[0])
-                        blue_emissions = blue_fc_out.view(-1, blue_model.output_seq_length, blue_model.output_dim)
+                        # 获取蓝球模型的发射概率
+                        blue_emissions = blue_model.get_emissions(scaled_input)
                         blue_mask = torch.ones(blue_emissions.size()[:2], dtype=torch.uint8)
                         blue_sampled_sequences = sample_crf_sequences(blue_model.crf, blue_emissions, blue_mask, num_samples=1, temperature=1.0)
 

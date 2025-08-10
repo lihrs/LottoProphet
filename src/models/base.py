@@ -23,7 +23,7 @@ project_dir = os.path.dirname(os.path.dirname(script_dir))
 if project_dir not in sys.path:
     sys.path.append(project_dir)
 
-from utils.device_utils import check_device_availability
+from src.utils.device_utils import check_device_availability
 
 # 尝试导入可选的模型库
 try:

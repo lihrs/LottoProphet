@@ -953,7 +953,9 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                         similar, match_info = check_prediction_against_history(combined_prediction, self.lottery_type, rule)
                         if similar:
                             is_similar = True
-                            self.log(f"预测结果与历史相似: {combined_prediction}")
+                            # 提取匹配的期数信息并显示在日志中
+                            match_periods = [match['期数'] for match in match_info]
+                            self.log(f"预测结果与历史相似: {combined_prediction}, 匹配期数: {match_periods}")
                             break
                     
                     # 如果与历史相似，调整预测
