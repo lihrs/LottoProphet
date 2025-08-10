@@ -917,12 +917,21 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
                     blue_numbers.append(predicted + 1)  # 转换为1-based索引
                     blue_confidences.append(confidence.item() if isinstance(confidence, torch.Tensor) else confidence)
                 
-                # 确保红球号码唯一
-                red_numbers = self._ensure_unique_red_numbers(red_numbers)
+                # 确保红球号码唯一并更新置信度
+                red_numbers, red_confidences = self._ensure_unique_red_numbers_with_confidence(red_numbers, red_confidences)
+                
+                # 确保蓝球号码唯一并更新置信度
+                blue_numbers, blue_confidences = self._ensure_unique_blue_numbers_with_confidence(blue_numbers, blue_confidences)
                 
                 # 对红球和蓝球号码进行排序（从小到大）
-                red_numbers.sort()
-                blue_numbers.sort()
+                # 注意：排序后需要同步调整置信度顺序
+                sorted_indices_red = sorted(range(len(red_numbers)), key=lambda i: red_numbers[i])
+                red_numbers = [red_numbers[i] for i in sorted_indices_red]
+                red_confidences = [red_confidences[i] for i in sorted_indices_red]
+                
+                sorted_indices_blue = sorted(range(len(blue_numbers)), key=lambda i: blue_numbers[i])
+                blue_numbers = [blue_numbers[i] for i in sorted_indices_blue]
+                blue_confidences = [blue_confidences[i] for i in sorted_indices_blue]
                 
                 predictions.append((red_numbers, blue_numbers))
                 all_confidences.append((red_confidences, blue_confidences))
@@ -977,6 +986,54 @@ class LSTMTimeStepModel(BaseMLModel, nn.Module):
             updated_confidences = []
             for i, num in enumerate(unique_numbers):
                 if i < len(confidences) and num == red_numbers[i]:
+                    updated_confidences.append(confidences[i])
+                else:
+                    updated_confidences.append(0.5)
+            return unique_numbers, updated_confidences
+        else:
+            return unique_numbers, [0.5] * len(unique_numbers)
+            
+    def _ensure_unique_blue_numbers(self, blue_numbers):
+        """
+        确保蓝球号码唯一
+        """
+        unique_numbers = []
+        used_numbers = set()
+        
+        for num in blue_numbers:
+            if num not in used_numbers:
+                unique_numbers.append(num)
+                used_numbers.add(num)
+            else:
+                # 找一个未使用的号码
+                for candidate in range(1, self.blue_range + 1):
+                    if candidate not in used_numbers:
+                        unique_numbers.append(candidate)
+                        used_numbers.add(candidate)
+                        break
+        
+        return sorted(unique_numbers)
+        
+    def _ensure_unique_blue_numbers_with_confidence(self, blue_numbers, confidences=None):
+        """
+        确保蓝球号码唯一，同时更新置信度
+        
+        参数:
+            blue_numbers: 蓝球号码列表
+            confidences: 对应的置信度列表
+            
+        返回:
+            唯一的蓝球号码列表和更新后的置信度列表
+        """
+        # 直接调用基础版本的方法
+        unique_numbers = self._ensure_unique_blue_numbers(blue_numbers)
+        
+        # 如果需要置信度，则创建一个简单的置信度列表
+        if confidences is not None:
+            # 保持原始置信度，对于替换的号码使用默认值0.5
+            updated_confidences = []
+            for i, num in enumerate(unique_numbers):
+                if i < len(confidences) and num == blue_numbers[i]:
                     updated_confidences.append(confidences[i])
                 else:
                     updated_confidences.append(0.5)
