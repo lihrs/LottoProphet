@@ -83,7 +83,7 @@ def check_prediction_against_history(prediction, lottery_type, similarity_thresh
             back_history = [row['蓝球_1'], row['蓝球_2']]
         else:  # ssq
             front_history = [row['红球_1'], row['红球_2'], row['红球_3'], row['红球_4'], row['红球_5'], row['红球_6']]
-            back_history = [row['蓝球_1']]
+            back_history = [row['蓝球']]
         
         # 计算前区和后区匹配的数量
         front_match_count = len(set(front_prediction) & set(front_history))
